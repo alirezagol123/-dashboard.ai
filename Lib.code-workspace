@@ -1,0 +1,25 @@
+{
+	"folders": [
+		{
+			"path": "../.venv/Lib"
+		},
+		{
+			"path": "../.venv/node_modules"
+		},
+		{
+			"path": "../.venv/pdf_files"
+		},
+		{
+			"path": "../.venv/process_educational_content.py"
+		},
+		{
+			"path": "../.venv/processed-content"
+		},
+		{
+			"path": "../.venv/Scripts"
+		},
+		{
+			"path": "../.venv/src"
+		}
+	]
+}
