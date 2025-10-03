@@ -1,0 +1,59 @@
+# Exclude large files and directories from Vercel deployment
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git/
+.gitignore
+README.md
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Large data files
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.json
+database_csv_*/
+sensor_analysis_*.json
+environmental_data.json
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp

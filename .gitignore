@@ -42,6 +42,8 @@ venv.bak/
 *.sqlite
 *.sqlite3
 smart_dashboard.db
+smart_dashboard.db-journal
+smart_dashboard.db-wal
 
 # Logs
 *.log
