@@ -71,6 +71,14 @@ frontend/out/
 *.swp
 *.swo
 *~
+.windsurf/
+.cursor/
+.codeium/
+
+# System files
+AppData/
+NTUSER.DAT*
+ntuser.dat*
 
 # OS
 .DS_Store
