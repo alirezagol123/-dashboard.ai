@@ -414,5 +414,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **Built with ❤️ by the Smart Agriculture Dashboard Team**
 
-*Empowering farmers with AI-driven insights and real-time monitoring*#   W e b h o o k   T e s t   -   1 0 / 0 4 / 2 0 2 5   0 9 : 3 1 : 5 1  
+*Empowering farmers with AI-driven insights and real-time monitoring*#   W e b h o o k   T e s t   -   1 0 / 0 4 / 2 0 2 5   0 9 : 3 1 : 5 1 
+ 
  
