@@ -210,8 +210,6 @@ const FormattedMessage = ({ content, chart, chartType, sidebarWidth = 320 }) => 
           return delay;
         }
       },
-      responsive: true,
-      maintainAspectRatio: false,
       onHover: (event, activeElements) => {
         event.native.target.style.cursor = activeElements.length > 0 ? 'pointer' : 'default';
       }
