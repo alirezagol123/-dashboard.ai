@@ -1,0 +1,14 @@
+{
+  "port": 80,
+  "platform": "python",
+  "app": "dashboardai",
+  "build": {
+    "location": "iran"
+  },
+  "python": {
+    "version": "3.11"
+  },
+  "start": {
+    "command": "python start_server.py"
+  }
+}
