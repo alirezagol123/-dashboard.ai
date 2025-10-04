@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: smart-agriculture-dashboard
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npx serve dist -s -l $PORT
+    envVars:
+      - key: NODE_VERSION
+        value: 18
+      - key: VITE_API_BASE_URL
+        value: https://your-backend.railway.app
+      - key: VITE_WS_URL
+        value: wss://your-backend.railway.app/ws/data
