@@ -26,7 +26,10 @@ if __name__ == "__main__":
     try:
         # Get port and host from environment variables (for Liara)
         port_str = os.getenv("PORT", "8000")
-        port = int(port_str) if port_str else 8000
+        try:
+            port = int(port_str) if port_str and port_str.strip() else 8000
+        except (ValueError, TypeError):
+            port = 8000
         host = os.getenv("HOST", "0.0.0.0")
         
         # Ensure host is not empty
@@ -36,7 +39,8 @@ if __name__ == "__main__":
         print(f"Environment variables:")
         print(f"  PORT: '{os.getenv('PORT', 'NOT SET')}'")
         print(f"  HOST: '{os.getenv('HOST', 'NOT SET')}'")
-        print(f"  PORT_STR: '{port_str}'")
+        print(f"  PORT_STR: '{port_str}' (type: {type(port_str)})")
+        print(f"  PORT_STR.strip(): '{port_str.strip() if port_str else 'None'}'")
         print(f"  Final PORT: {port}")
         print(f"Starting server on {host}:{port}")
         
