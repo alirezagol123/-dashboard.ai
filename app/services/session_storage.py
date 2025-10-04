@@ -270,5 +270,4 @@ class SessionStorage:
             
         except Exception as e:
             logger.error(f"Error getting active sessions: {e}")
-            return []
-
+            return [] 
