@@ -25,9 +25,15 @@ import uvicorn
 if __name__ == "__main__":
     try:
         # Get port and host from environment variables (for Liara)
-        port = int(os.getenv("PORT", 8000))
+        port_str = os.getenv("PORT", "8000")
+        port = int(port_str) if port_str else 8000
         host = os.getenv("HOST", "0.0.0.0")
         
+        print(f"Environment variables:")
+        print(f"  PORT: '{os.getenv('PORT', 'NOT SET')}'")
+        print(f"  HOST: '{os.getenv('HOST', 'NOT SET')}'")
+        print(f"  PORT_STR: '{port_str}'")
+        print(f"  Final PORT: {port}")
         print(f"Starting server on {host}:{port}")
         
         uvicorn.run(

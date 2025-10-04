@@ -12,6 +12,9 @@
   },
   "env": {
     "PORT": "8000",
-    "HOST": "0.0.0.0"
+    "HOST": "0.0.0.0",
+    "OPENAI_API_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySUQiOiI2ODQ1NzQzNDdkOTQ0NDlhMzc2NDFhNzgiLCJ0eXBlIjoiYXV0aCIsImlhdCI6MTc1ODEzNDY2N30.BdDAu4IF_y2oVZPUyZH41Ap_PZpfjZwRJoR3V8CCsGk",
+    "OPENAI_API_BASE": "https://ai.liara.ir/api/v1/688a24a93d0c49e74e362a7f",
+    "OPENAI_MODEL_NAME": "openai/gpt-4o-mini"
   }
 }
