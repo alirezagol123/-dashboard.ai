@@ -29,6 +29,10 @@ if __name__ == "__main__":
         port = int(port_str) if port_str else 8000
         host = os.getenv("HOST", "0.0.0.0")
         
+        # Ensure host is not empty
+        if not host:
+            host = "0.0.0.0"
+        
         print(f"Environment variables:")
         print(f"  PORT: '{os.getenv('PORT', 'NOT SET')}'")
         print(f"  HOST: '{os.getenv('HOST', 'NOT SET')}'")
