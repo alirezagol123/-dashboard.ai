@@ -42,6 +42,14 @@ from app.ai_assistant_api import router as ai_assistant_router
 from app.db.database import Base
 Base.metadata.create_all(bind=engine)
 
+# Initialize PostgreSQL database on Liara
+if os.getenv("LIARA_APP_ID"):
+    try:
+        from init_postgresql import init_postgresql_database
+        init_postgresql_database()
+    except Exception as e:
+        logger.warning(f"PostgreSQL initialization failed: {e}")
+
 app = FastAPI(
     title="Smart Data Dashboard API",
     description="Backend API for Smart Data Dashboard MVP",
@@ -979,15 +987,23 @@ async def get_action_logs(session_id: str = "default"):
         import sqlite3
         import json
         
-        # Connect to database with proper path for Liara
+        # Connect to database - use PostgreSQL on Liara, SQLite locally
         if os.getenv("LIARA_APP_ID"):
-            db_dir = "/var/lib/data"
-            os.makedirs(db_dir, exist_ok=True)
-            db_path = os.path.join(db_dir, "smart_dashboard.db")
+            # Use PostgreSQL on Liara
+            import psycopg2
+            from urllib.parse import urlparse
+            db_url = os.getenv("DATABASE_URL")
+            parsed = urlparse(db_url)
+            conn = psycopg2.connect(
+                host=parsed.hostname,
+                port=parsed.port,
+                database=parsed.path[1:],  # Remove leading slash
+                user=parsed.username,
+                password=parsed.password
+            )
         else:
-            db_path = "smart_dashboard.db"
-        
-        conn = sqlite3.connect(db_path)
+            # Use SQLite locally
+            conn = sqlite3.connect("smart_dashboard.db")
         cursor = conn.cursor()
         
         # Create action_logs table if it doesn't exist
@@ -1048,15 +1064,23 @@ async def create_action_log(action_data: dict):
         import json
         from datetime import datetime
         
-        # Connect to database with proper path for Liara
+        # Connect to database - use PostgreSQL on Liara, SQLite locally
         if os.getenv("LIARA_APP_ID"):
-            db_dir = "/var/lib/data"
-            os.makedirs(db_dir, exist_ok=True)
-            db_path = os.path.join(db_dir, "smart_dashboard.db")
+            # Use PostgreSQL on Liara
+            import psycopg2
+            from urllib.parse import urlparse
+            db_url = os.getenv("DATABASE_URL")
+            parsed = urlparse(db_url)
+            conn = psycopg2.connect(
+                host=parsed.hostname,
+                port=parsed.port,
+                database=parsed.path[1:],  # Remove leading slash
+                user=parsed.username,
+                password=parsed.password
+            )
         else:
-            db_path = "smart_dashboard.db"
-        
-        conn = sqlite3.connect(db_path)
+            # Use SQLite locally
+            conn = sqlite3.connect("smart_dashboard.db")
         cursor = conn.cursor()
         
         # Create action_logs table if it doesn't exist
