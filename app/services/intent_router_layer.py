@@ -103,26 +103,26 @@ class IntentRouterLayer:
         """Detect comparison intent in query (language-independent)"""
         query_lower = query.lower()
         
-        # Persian comparison keywords
+        # Persian comparison keywords - STRICT: Only explicit comparison words
         persian_comparison_words = [
-            "مقایسه", "مقایسه", "تفاوت", "نسبت", "در مقابل", "با", "بین",
-            "امروز", "دیروز", "هفته", "ماه", "سال", "پیش", "گذشته", "اخیر"
+            "مقایسه", "تفاوت", "نسبت", "در مقابل", "با", "بین"
         ]
         
-        # English comparison keywords  
+        # English comparison keywords - STRICT: Only explicit comparison words
         english_comparison_words = [
-            "compare", "comparison", "difference", "versus", "vs", "against",
-            "today", "yesterday", "week", "month", "year", "ago", "past", "recent"
+            "compare", "comparison", "difference", "versus", "vs", "against", "contrast"
         ]
         
-        # Check for comparison patterns
+        # Check for comparison patterns - STRICT: Only explicit comparison patterns
         comparison_patterns = [
-            r'\d+\s*روز\s*پیش',  # "X days ago" in Persian
-            r'\d+\s*days?\s*ago',  # "X days ago" in English
             r'امروز.*دیروز',  # "today ... yesterday" in Persian
             r'today.*yesterday',  # "today ... yesterday" in English
             r'هفته.*هفته',  # "week ... week" in Persian
             r'week.*week',  # "week ... week" in English
+            r'مقایسه.*با',  # "compare with" in Persian
+            r'compare.*with',  # "compare with" in English
+            r'تفاوت.*بین',  # "difference between" in Persian
+            r'difference.*between',  # "difference between" in English
         ]
         
         # Check for comparison keywords
@@ -441,26 +441,54 @@ Persian:"""
             }
     
     def _process_alert_query(self, query: str, session_id: str, feature_context: str) -> Dict[str, Any]:
-        """Process alert management queries"""
+        """Process enhanced alert management queries with advanced ontology"""
         try:
-            print(f" DEBUG: Processing alert query: {len(query)} characters")
-            logger.info(f" Processing alert query: {query}")
+            print(f" DEBUG: Processing ENHANCED alert query: {len(query)} characters")
+            logger.info(f" Processing ENHANCED alert query: {query}")
             
-            # Use the unified semantic service to process alert queries
-            from app.services.unified_semantic_service import UnifiedSemanticQueryService
-            service = UnifiedSemanticQueryService()
+            # Use the enhanced alert manager directly
+            from app.services.alert_manager import AlertManager
+            alert_manager = AlertManager()
             
-            # Process the alert query - the query is already translated to English
-            # from the main processing flow, so we can process it directly
-            result = service._process_alert_query(query, session_id, "en")
+            # Process the alert query with enhanced ontology
+            result = alert_manager.create_alert_from_natural_language(query, session_id)
             
-            print(f" DEBUG: Alert processing result: {result.get('success', False)}")
-            logger.info(f" Alert processing result: {result.get('success', False)}")
+            print(f" DEBUG: Enhanced alert processing result: {result.get('success', False)}")
+            logger.info(f" Enhanced alert processing result: {result.get('success', False)}")
+            
+            if result["success"]:
+                # Generate enhanced response with bullet points and minimal emojis
+                response_text = f"✅ Enhanced alert created successfully!\n\n"
+                response_text += f"Alert Details:\n"
+                response_text += f"• Sensor: {result['sensor_type'].replace('_', ' ').title()}\n"
+                response_text += f"• Condition: {result['condition']} {result['threshold']}\n"
+                response_text += f"• Severity: {result.get('severity', 'warning').upper()}\n"
+                response_text += f"• Operator: {result.get('operator', '>')}\n"
+                if result.get('time_window', 0) > 0:
+                    response_text += f"• Time Window: {result['time_window']} minutes\n"
+                if result.get('action_type'):
+                    response_text += f"• Action: {result['action_type'].upper()}\n"
+                response_text += f"• Status: 🟢 Active\n\n"
+                response_text += f"Enhanced Features:\n"
+                response_text += f"• Advanced operators: {result.get('operator', '>')}\n"
+                response_text += f"• Severity level: {result.get('severity', 'warning')}\n"
+                response_text += f"• Automated action: {result.get('action_type', 'none')}\n"
+                response_text += f"• Alert ID: {result['alert_id']}\n\n"
+                response_text += f"Next steps:\n"
+                response_text += f"• Say 'Show my alerts' to see all enhanced alerts\n"
+                response_text += f"• Say 'Delete {result['sensor_type']} alert' to remove this alert\n"
+                response_text += f"• Create more alerts with severity levels and actions"
+            else:
+                response_text = f"❌ Failed to create enhanced alert: {result.get('error', 'Unknown error')}\n\n"
+                response_text += f"Try these enhanced examples:\n"
+                response_text += f"• 'Critical alert when temperature >= 30°C with email'\n"
+                response_text += f"• 'Warning alert when humidity <= 20% with SMS'\n"
+                response_text += f"• 'Info alert when soil moisture = 50% with auto action'"
             
             return {
                 "type": "alert_management",
                 "success": result.get("success", False),
-                "response": result.get("response", ""),
+                "response": response_text,
                 "data": result.get("data", []),
                 "sql": result.get("sql", ""),
                 "metrics": result.get("metrics", {}),
@@ -602,26 +630,48 @@ Extract only the reasoning question (about actions/decisions):"""
                     timestamp = data_point.get('timestamp', 'N/A')
                     sensor_data_text += f"- {sensor_type}: {value} (at {timestamp})\n"
             
-            prompt = f"""You are an AI assistant for a smart agriculture platform. 
-Always respond in this structured format with proper markdown formatting:
+            prompt = f"""You are an expert agricultural AI assistant. Provide concise, helpful responses.
 
-# Summary
-Brief one-sentence summary combining data and reasoning
+RESPONSE STRUCTURE:
+1. **Brief Summary** - 2 sentences maximum about the current situation
+2. **Clean Data Section** - Show the actual data in a readable format
 
-## Key Metrics
-- Metric 1: value
-- Metric 2: value  
-- Metric 3: value
+GUIDELINES:
+- Keep it short and to the point (2 sentences max)
+- Give quick insights about what the data shows
+- If user speaks Persian, reply in Persian; if English, reply in English
+- Use EXACT time range from the data provided below
+- NEVER use generic labels like "Last Hour", "Last 6 Hours", "Last 24 Hours", "Last Week"
+- NEVER use Persian generic labels like "آخرین ساعت", "آخرین ۶ ساعت", "آخرین ۲۴ ساعت", "آخرین هفته"
 
-## Analysis
-Brief analysis combining data insights and reasoning (max 2 sentences)
+FOR THE DATA SECTION, use this format:
+```
+📊 Sensor Data by Time Range:
+• Sensor Name: Avg: X.X, Min: X.X, Max: X.X (EXACT TIME RANGE FROM DATA)
+• Sensor Name: Avg: X.X, Min: X.X, Max: X.X (EXACT TIME RANGE FROM DATA)
+• Sensor Name: Avg: X.X, Min: X.X, Max: X.X (EXACT TIME RANGE FROM DATA)
+• Sensor Name: Avg: X.X, Min: X.X, Max: X.X (EXACT TIME RANGE FROM DATA)
+```
 
-## Recommendations
-1. First recommendation
-2. Second recommendation
+CRITICAL INSTRUCTION: Copy the EXACT time labels from the data provided below. DO NOT create your own time range labels!
 
-Use proper markdown formatting with headers (#, ##), bullet points (-), and numbered lists (1., 2.). 
-Keep responses concise and clear. If user speaks Persian, reply in Persian.
+FOR THE ANALYSIS SECTION, use this format:
+```
+🔍 Analysis:
+• Trend: [Describe the trend - increasing, decreasing, stable]
+• Pattern: [Identify any patterns in the data]
+• Significance: [What this means for the farm]
+• Alert Level: [Low/Medium/High based on the data]
+```
+
+FOR THE RECOMMENDATIONS SECTION, use this format:
+```
+💡 Recommendations:
+• Immediate Actions: [What to do right now]
+• Monitoring: [What to watch for]
+• Long-term: [Strategic advice for the future]
+• Resources: [Any tools or methods to use]
+```
 
 Original query: {original_query}
 

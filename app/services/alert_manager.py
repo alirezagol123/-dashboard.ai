@@ -6,6 +6,7 @@ Handles alert creation, management, and monitoring through AI Assistant
 import logging
 import sqlite3
 import json
+import os
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import re
@@ -13,11 +14,41 @@ import re
 logger = logging.getLogger(__name__)
 
 class AlertManager:
-    """Manages user alerts created through AI Assistant"""
+    """Enhanced Alert Manager with advanced ontology support"""
     
-    def __init__(self, db_path: str = "smart_dashboard.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        # Use proper database path for Liara
+        if db_path is None:
+            if os.getenv("LIARA_APP_ID"):
+                db_dir = "/var/lib/data"
+                os.makedirs(db_dir, exist_ok=True)
+                self.db_path = os.path.join(db_dir, "smart_dashboard.db")
+            else:
+                self.db_path = "smart_dashboard.db"
+        else:
+            self.db_path = db_path
         self._init_database()
+        
+        # Enhanced ontology support
+        self.severity_levels = {
+            "info": {"color": "blue", "priority": 1, "description": "Informational alert"},
+            "warning": {"color": "yellow", "priority": 2, "description": "Early warning"},
+            "critical": {"color": "red", "priority": 3, "description": "Critical alert - immediate response required"}
+        }
+        
+        self.comparison_operators = {
+            ">": "greater than",
+            "<": "less than", 
+            "=": "equal to",
+            ">=": "greater or equal",
+            "<=": "less or equal"
+        }
+        
+        self.alert_statuses = {
+            "active": "Alert is currently active",
+            "resolved": "Alert condition returned to normal", 
+            "pending": "Alert is under evaluation"
+        }
     
     def _init_database(self):
         """Initialize alert database table"""
@@ -48,12 +79,12 @@ class AlertManager:
             logger.error(f"❌ Error initializing alert database: {e}")
     
     def create_alert_from_natural_language(self, query: str, user_id: str = "default") -> Dict[str, Any]:
-        """Create alert from natural language query"""
+        """Create enhanced alert from natural language query with ontology support"""
         try:
-            logger.info(f"🔔 Creating alert from query: {query}")
+            logger.info(f"🔔 Creating enhanced alert from query: {query}")
             
-            # Parse the natural language query
-            parsed_alert = self._parse_alert_query(query)
+            # Parse the natural language query with enhanced ontology
+            parsed_alert = self._parse_enhanced_alert_query(query)
             
             if not parsed_alert:
                 return {
@@ -61,8 +92,8 @@ class AlertManager:
                     "error": "Could not parse alert conditions from your query"
                 }
             
-            # Create alert in database
-            alert_id = self._save_alert_to_db(user_id, parsed_alert)
+            # Create alert in database with enhanced fields
+            alert_id = self._save_enhanced_alert_to_db(user_id, parsed_alert)
             
             return {
                 "success": True,
@@ -71,16 +102,121 @@ class AlertManager:
                 "sensor_type": parsed_alert["sensor_type"],
                 "condition": parsed_alert["condition_type"],
                 "threshold": parsed_alert["threshold_value"],
-                "message": f"Alert created: {parsed_alert['alert_name']}"
+                "severity": parsed_alert.get("severity_level", "warning"),
+                "operator": parsed_alert.get("comparison_operator", ">"),
+                "time_window": parsed_alert.get("time_window", 0),
+                "action_type": parsed_alert.get("action_type"),
+                "message": f"Enhanced alert created: {parsed_alert['alert_name']}"
             }
             
         except Exception as e:
-            logger.error(f"❌ Error creating alert: {e}")
+            logger.error(f"❌ Error creating enhanced alert: {e}")
             return {
                 "success": False,
-                "error": f"Failed to create alert: {str(e)}"
+                "error": f"Failed to create enhanced alert: {str(e)}"
             }
     
+    def _parse_enhanced_alert_query(self, query: str) -> Optional[Dict[str, Any]]:
+        """Parse natural language query with enhanced ontology support"""
+        try:
+            # Use the unified semantic service's ontology mapping
+            from app.services.unified_semantic_service import UnifiedSemanticQueryService
+            
+            # Initialize the service to access ontology mapping
+            unified_service = UnifiedSemanticQueryService()
+            
+            # Detect language and translate Persian queries to English first
+            is_persian = any(ord(char) > 127 for char in query)
+            language = "fa" if is_persian else "en"
+            
+            # Translate Persian query to English first
+            translated_query = query
+            if is_persian:
+                try:
+                    translated_query = unified_service.translator.translate_query_to_english(query)
+                    logger.info(f" Translated Persian query to English: {translated_query}")
+                except Exception as e:
+                    logger.warning(f" Translation failed, using original query: {e}")
+                    translated_query = query
+            
+            # Map translated query to sensor type using ontology
+            mapping_result = unified_service._map_query_to_sensor_type(translated_query, language="en")
+            sensor_type = mapping_result.get("sensor_type")
+            
+            if not sensor_type:
+                logger.warning(f" No sensor type found in ontology mapping for query: {query}")
+                return None
+            
+            # Handle compound queries (multiple sensors) - take the first one for alerts
+            if isinstance(sensor_type, list):
+                sensor_type = sensor_type[0]
+                logger.info(f" Compound query detected, using first sensor: {sensor_type}")
+            
+            # Enhanced condition patterns with new operators
+            condition_patterns = {
+                "above": ["above", "over", "more than", "greater than", ">", "exceeds", "بیشتر از", "بالاتر از", "فراتر از", "زیادتر از"],
+                "below": ["below", "under", "less than", "lower than", "<", "drops below", "کمتر از", "پایین تر از", "کمتر از"],
+                "equals": ["equals", "equal to", "=", "is", "برابر", "مساوی", "همان"],
+                "greater_equal": [">=", "greater or equal", "at least", "minimum", "حداقل", "بیشتر یا مساوی"],
+                "less_equal": ["<=", "less or equal", "at most", "maximum", "حداکثر", "کمتر یا مساوی"]
+            }
+            
+            # Extract condition type and operator
+            condition_type = None
+            comparison_operator = ">"
+            query_lower = translated_query.lower()
+            
+            for condition, patterns in condition_patterns.items():
+                if any(pattern in query_lower for pattern in patterns):
+                    condition_type = condition
+                    if condition == "above":
+                        comparison_operator = ">"
+                    elif condition == "below":
+                        comparison_operator = "<"
+                    elif condition == "equals":
+                        comparison_operator = "="
+                    elif condition == "greater_equal":
+                        comparison_operator = ">="
+                    elif condition == "less_equal":
+                        comparison_operator = "<="
+                    break
+            
+            if not condition_type:
+                logger.warning(f" No condition type found for query: {query}")
+                return None
+            
+            # Extract threshold value
+            threshold_value = self._extract_threshold_value(translated_query)
+            if threshold_value is None:
+                return None
+            
+            # Extract severity level
+            severity_level = self._extract_severity_from_query(translated_query)
+            
+            # Extract time window
+            time_window = self._extract_time_window_from_query(translated_query)
+            
+            # Extract action type
+            action_type = self._extract_action_from_query(translated_query)
+            
+            # Generate alert name
+            alert_name = f"{sensor_type.replace('_', ' ').title()} Alert"
+            
+            return {
+                "alert_name": alert_name,
+                "sensor_type": sensor_type,
+                "condition_type": condition_type,
+                "threshold_value": threshold_value,
+                "comparison_operator": comparison_operator,
+                "severity_level": severity_level,
+                "time_window": time_window,
+                "action_type": action_type
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error parsing enhanced alert query: {e}")
+            return None
+
     def _parse_alert_query(self, query: str) -> Optional[Dict[str, Any]]:
         """Parse natural language query to extract alert conditions using ontology"""
         try:
@@ -239,6 +375,72 @@ class AlertManager:
             logger.error(f"❌ Error extracting threshold value: {e}")
             return None
     
+    def _extract_severity_from_query(self, query: str) -> str:
+        """Extract severity level from query"""
+        query_lower = query.lower()
+        
+        # Critical severity keywords
+        critical_keywords = ["critical", "urgent", "emergency", "danger", "بحرانی", "خطرناک", "فوری"]
+        if any(keyword in query_lower for keyword in critical_keywords):
+            return "critical"
+        
+        # Warning severity keywords  
+        warning_keywords = ["warning", "alert", "caution", "هشدار", "احتیاط"]
+        if any(keyword in query_lower for keyword in warning_keywords):
+            return "warning"
+        
+        # Info severity keywords
+        info_keywords = ["info", "information", "status", "اطلاعی", "وضعیت"]
+        if any(keyword in query_lower for keyword in info_keywords):
+            return "info"
+        
+        # Default to warning
+        return "warning"
+    
+    def _extract_time_window_from_query(self, query: str) -> int:
+        """Extract time window from query in minutes"""
+        query_lower = query.lower()
+        
+        # Hour patterns
+        hour_match = re.search(r'(\d+)\s*hour', query_lower)
+        if hour_match:
+            return int(hour_match.group(1)) * 60
+        
+        # Day patterns
+        day_match = re.search(r'(\d+)\s*day', query_lower)
+        if day_match:
+            return int(day_match.group(1)) * 24 * 60
+        
+        # Week patterns
+        week_match = re.search(r'(\d+)\s*week', query_lower)
+        if week_match:
+            return int(week_match.group(1)) * 7 * 24 * 60
+        
+        # Default to 0 (no time window)
+        return 0
+    
+    def _extract_action_from_query(self, query: str) -> Optional[str]:
+        """Extract action type from query"""
+        query_lower = query.lower()
+        
+        # Email action
+        if any(word in query_lower for word in ["email", "send email", "mail", "ایمیل"]):
+            return "email"
+        
+        # SMS action
+        if any(word in query_lower for word in ["sms", "text", "message", "پیامک"]):
+            return "sms"
+        
+        # Notification action
+        if any(word in query_lower for word in ["notify", "notification", "alert", "اعلان"]):
+            return "notification"
+        
+        # Auto action
+        if any(word in query_lower for word in ["auto", "automatic", "automate", "خودکار"]):
+            return "auto"
+        
+        return None
+    
     def _save_alert_to_db(self, user_id: str, alert_data: Dict[str, Any]) -> str:
         """Save alert to database"""
         try:
@@ -268,6 +470,44 @@ class AlertManager:
         except Exception as e:
             logger.error(f"❌ Error saving alert to database: {e}")
             raise e
+    
+    def _save_enhanced_alert_to_db(self, user_id: str, alert_data: Dict[str, Any]) -> str:
+        """Save enhanced alert to database with ontology fields"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO user_alerts (
+                    user_id, alert_name, sensor_type, condition_type, threshold_value, 
+                    severity_level, comparison_operator, time_window, action_type, 
+                    is_active, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                user_id,
+                alert_data["alert_name"],
+                alert_data["sensor_type"],
+                alert_data["condition_type"],
+                alert_data["threshold_value"],
+                alert_data.get("severity_level", "warning"),
+                alert_data.get("comparison_operator", ">"),
+                alert_data.get("time_window", 0),
+                alert_data.get("action_type"),
+                True,
+                datetime.now().isoformat()
+            ))
+            
+            alert_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ Enhanced alert saved to database with ID: {alert_id}")
+            return str(alert_id)
+            
+        except Exception as e:
+            logger.error(f"❌ Error saving enhanced alert to database: {e}")
+            return None
     
     def get_user_alerts(self, user_id: str = "default") -> List[Dict[str, Any]]:
         """Get all alerts for a user"""
@@ -325,7 +565,7 @@ class AlertManager:
             return False
     
     def check_alerts_against_data(self, sensor_data: List[Dict[str, Any]], user_id: str = "default") -> List[Dict[str, Any]]:
-        """Check sensor data against active alerts"""
+        """Check sensor data against active alerts and execute actions"""
         try:
             active_alerts = self.get_user_alerts(user_id)
             triggered_alerts = []
@@ -345,31 +585,63 @@ class AlertManager:
                 latest_data = max(matching_data, key=lambda x: x.get("timestamp", ""))
                 current_value = latest_data.get("value", 0)
                 
-                # Check condition
+                # Check condition with enhanced operators
                 threshold = alert["threshold_value"]
                 condition = alert["condition_type"]
+                comparison_operator = alert.get("comparison_operator", ">")
+                severity_level = alert.get("severity_level", "warning")
                 
                 condition_met = False
-                if condition == "above" and current_value > threshold:
+                if comparison_operator == ">" and current_value > threshold:
                     condition_met = True
-                elif condition == "below" and current_value < threshold:
+                elif comparison_operator == "<" and current_value < threshold:
                     condition_met = True
-                elif condition == "equals" and current_value == threshold:
+                elif comparison_operator == "=" and current_value == threshold:
+                    condition_met = True
+                elif comparison_operator == ">=" and current_value >= threshold:
+                    condition_met = True
+                elif comparison_operator == "<=" and current_value <= threshold:
                     condition_met = True
                 
                 if condition_met:
-                    triggered_alerts.append({
+                    triggered_alert = {
                         "alert_id": alert["id"],
                         "alert_name": alert["alert_name"],
                         "sensor_type": sensor_type,
                         "current_value": current_value,
                         "threshold": threshold,
                         "condition": condition,
+                        "operator": comparison_operator,
+                        "severity": severity_level,
+                        "action_type": alert.get("action_type"),
                         "timestamp": datetime.now().isoformat()
-                    })
+                    }
+                    
+                    triggered_alerts.append(triggered_alert)
+                    
+                    # Execute automated actions if configured
+                    if alert.get("action_type"):
+                        self._execute_alert_actions(triggered_alert)
             
             return triggered_alerts
             
         except Exception as e:
             logger.error(f"❌ Error checking alerts: {e}")
             return []
+    
+    def _execute_alert_actions(self, triggered_alert: Dict[str, Any]):
+        """Execute automated actions for triggered alert"""
+        try:
+            from app.services.action_executor import ActionExecutor
+            
+            action_executor = ActionExecutor()
+            execution_results = action_executor.execute_alert_actions([triggered_alert])
+            
+            for result in execution_results:
+                if result["status"] == "success":
+                    logger.info(f"✅ Action executed successfully for alert {result['alert_id']}")
+                else:
+                    logger.error(f"❌ Action execution failed for alert {result['alert_id']}: {result.get('error')}")
+                    
+        except Exception as e:
+            logger.error(f"❌ Error executing alert actions: {e}")

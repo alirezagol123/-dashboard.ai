@@ -121,6 +121,37 @@ class QueryBuilder:
             """
         }
     
+    def build_time_based_query(self, sensor_type, time_context, aggregation="AVG"):
+        """Build time-based query using dynamic time_context"""
+        start = time_context["start_time"]
+        end = time_context["end_time"]
+        granularity = time_context["interval"]
+
+        if granularity.startswith("hour"):
+            time_group = "strftime('%Y-%m-%d %H:00', timestamp)"
+        elif granularity.startswith("day"):
+            time_group = "date(timestamp)"
+        elif granularity.startswith("week"):
+            time_group = "strftime('%Y-%W', timestamp)"
+        elif granularity.startswith("month"):
+            time_group = "strftime('%Y-%m', timestamp)"
+        else:
+            time_group = "strftime('%Y-%m-%d %H:00', timestamp)"
+
+        return f"""
+        SELECT {time_group} AS time_period,
+               sensor_type,
+               {aggregation}(value) AS avg_value,
+               MIN(value) AS min_value,
+               MAX(value) AS max_value,
+               COUNT(*) AS data_points
+        FROM sensor_data
+        WHERE sensor_type = '{sensor_type}'
+          AND timestamp BETWEEN '{start}' AND '{end}'
+        GROUP BY {time_group}, sensor_type
+        ORDER BY time_period;
+        """
+
     def build_sql_from_semantic_json(self, semantic_json: Dict[str, Any]) -> str:
         """Convert semantic JSON to SQL query"""
         try:
@@ -134,6 +165,46 @@ class QueryBuilder:
             format_type = semantic_json.get("format", "value")
             comparison = semantic_json.get("comparison", False)
             
+            # Check if time_context is available for dynamic query generation
+            time_context = semantic_json.get("time_context")
+            if time_context:
+                logger.info(f"🔧 Using dynamic time_context: {time_context}")
+                # Use dynamic time-based query generation
+                if isinstance(entity, list):
+                    # Handle multiple entities
+                    sensor_types = "', '".join(entity)
+                    start = time_context["start_time"]
+                    end = time_context["end_time"]
+                    granularity = time_context["interval"]
+                    
+                    if granularity.startswith("hour"):
+                        time_group = "strftime('%Y-%m-%d %H:00', timestamp)"
+                    elif granularity.startswith("day"):
+                        time_group = "date(timestamp)"
+                    elif granularity.startswith("week"):
+                        time_group = "strftime('%Y-%W', timestamp)"
+                    elif granularity.startswith("month"):
+                        time_group = "strftime('%Y-%m', timestamp)"
+                    else:
+                        time_group = "strftime('%Y-%m-%d %H:00', timestamp)"
+                    
+                    return f"""
+                    SELECT {time_group} AS time_period,
+                           sensor_type,
+                           AVG(value) AS avg_value,
+                           MIN(value) AS min_value,
+                           MAX(value) AS max_value,
+                           COUNT(*) AS data_points
+                    FROM sensor_data
+                    WHERE sensor_type IN ('{sensor_types}')
+                      AND timestamp BETWEEN '{start}' AND '{end}'
+                    GROUP BY {time_group}, sensor_type
+                    ORDER BY time_period ASC, sensor_type ASC;
+                    """
+                else:
+                    # Single entity with dynamic time context
+                    return self.build_time_based_query(entity, time_context, "AVG")
+            
             # Handle comparison queries
             if comparison:
                 # Check if this is time range comparison (multiple time periods) - PRIORITY
@@ -144,68 +215,78 @@ class QueryBuilder:
                     return self._build_entity_comparison_sql(entity, aggregation, time_range)
                 else:
                     # Single entity + single time range but comparison requested
-                    # Check if this is a time range that should be broken down by appropriate period
-                    if isinstance(time_range, str) and any(keyword in time_range.lower() for keyword in ["days", "hours", "weeks", "months", "last_", "past_", "ago"]):
-                        # For time-based ranges, provide period breakdown instead of comparison
-                        return self._build_daily_breakdown_sql(entity, time_range, aggregation, grouping)
+                    # Use dynamic time_context if available, otherwise fallback to static logic
+                    if time_context:
+                        return self.build_time_based_query(entity, time_context, "AVG")
                     else:
-                        # Use the time_range from semantic_json (which should be expanded ranges)
-                        if isinstance(time_range, list):
-                            comparison_ranges = time_range
+                        # Fallback to static time range logic
+                        if isinstance(time_range, str) and any(keyword in time_range.lower() for keyword in ["days", "hours", "weeks", "months", "last_", "past_", "ago"]):
+                            return self._build_daily_breakdown_sql(entity, time_range, aggregation, grouping)
                         else:
-                            # If time_range is still a string, try to expand it
-                            comparison_ranges = [time_range, self._get_previous_time_range(time_range)]
-                        return self._build_time_comparison_sql(entity, comparison_ranges, aggregation, grouping)
+                            if isinstance(time_range, list):
+                                comparison_ranges = time_range
+                            else:
+                                comparison_ranges = [time_range, self._get_previous_time_range(time_range)]
+                            return self._build_time_comparison_sql(entity, comparison_ranges, aggregation, grouping)
             
             # Handle compound entities (multiple sensors)
             if isinstance(entity, list):
                 return self._build_compound_sql(entity, semantic_json)
             
-            # Handle single entity queries
-            return self._build_single_entity_sql(entity, aggregation, time_range, grouping, format_type)
+            # Handle single entity queries - use dynamic time_context if available
+            if time_context:
+                return self.build_time_based_query(entity, time_context, "AVG")
+            else:
+                # Fallback to static logic
+                return self._build_single_entity_sql(entity, aggregation, time_range, grouping, format_type)
             
         except Exception as e:
             logger.error(f"❌ Error building SQL from semantic JSON: {e}")
             return self._get_fallback_sql(entity if isinstance(entity, str) else "temperature")
     
     def _build_single_entity_sql(self, entity: str, aggregation: str, time_range: str, grouping: str, format_type: str) -> str:
-        """Build SQL for single entity queries"""
+        """Build SQL for single entity queries - now uses dynamic time_context"""
         try:
-            # Map time range to SQL time window
-            time_window = self._parse_time_range(time_range)
-            
-            # Determine template based on aggregation and grouping
+            # For current/latest values, use simple template
             if aggregation == "current" or aggregation == "latest":
                 template = self.sql_templates["current_value"]
                 return template.format(entity=entity)
             
+            # For average values without grouping, use simple template
             elif aggregation == "average" and grouping == "none":
                 template = self.sql_templates["average_value"]
                 return template.format(entity=entity)
             
-            elif aggregation == "average" and grouping in ["by_day", "daily"]:
-                template = self.sql_templates["time_aware_day"]
-                return template.format(entity=entity, time_range=time_window["days"])
-            
-            elif aggregation == "average" and grouping in ["by_hour", "hourly"]:
-                template = self.sql_templates["time_aware_hour"]
-                return template.format(entity=entity, time_range=time_window["hours"])
-            
-            elif aggregation == "average" and grouping in ["by_minute", "minutely"]:
-                template = self.sql_templates["time_aware_minute"]
-                return template.format(entity=entity, time_range=time_window["minutes"])
-            
-            elif aggregation == "average" and grouping in ["by_week", "weekly"]:
-                template = self.sql_templates["time_aware_week"]
-                return template.format(entity=entity, time_range=time_window["days"])
-            
-            elif format_type == "trend":
-                template = self.sql_templates["trend_analysis"]
-                return template.format(entity=entity)
-            
+            # For grouped queries, use dynamic time_context approach
+            # This method is now primarily a fallback when time_context is not available
+            # The main logic should use build_time_based_query with time_context
             else:
+                # Fallback to static time range parsing (legacy support)
+                time_window = self._parse_time_range(time_range)
+                
+                if aggregation == "average" and grouping in ["by_day", "daily"]:
+                    template = self.sql_templates["time_aware_day"]
+                    return template.format(entity=entity, time_range=time_window["days"])
+                
+                elif aggregation == "average" and grouping in ["by_hour", "hourly"]:
+                    template = self.sql_templates["time_aware_hour"]
+                    return template.format(entity=entity, time_range=time_window["hours"])
+                
+                elif aggregation == "average" and grouping in ["by_minute", "minutely"]:
+                    template = self.sql_templates["time_aware_minute"]
+                    return template.format(entity=entity, time_range=time_window["minutes"])
+            
+                elif aggregation == "average" and grouping in ["by_week", "weekly"]:
+                    template = self.sql_templates["time_aware_week"]
+                    return template.format(entity=entity, time_range=time_window["days"])
+            
+                elif format_type == "trend":
+                    template = self.sql_templates["trend_analysis"]
+                    return template.format(entity=entity)
+            
+                else:
                 # Default fallback
-                return self._get_fallback_sql(entity)
+                     return self._get_fallback_sql(entity)
                 
         except Exception as e:
             logger.error(f"❌ Error building single entity SQL: {e}")
@@ -262,12 +343,26 @@ class QueryBuilder:
             return {"days": 2, "hours": 48, "minutes": 2880}
         elif "last_24_hours" in time_range_lower or "one_day" in time_range_lower:
             return {"days": 1, "hours": 24, "minutes": 1440}
+        elif "last_4_hours" in time_range_lower or "four_hours" in time_range_lower:
+            return {"days": 0, "hours": 4, "minutes": 240}
+        elif "last_6_hours" in time_range_lower or "six_hours" in time_range_lower:
+            return {"days": 0, "hours": 6, "minutes": 360}
+        elif "last_8_hours" in time_range_lower or "eight_hours" in time_range_lower:
+            return {"days": 0, "hours": 8, "minutes": 480}
+        elif "last_12_hours" in time_range_lower or "twelve_hours" in time_range_lower:
+            return {"days": 0, "hours": 12, "minutes": 720}
         elif "last_2_hours" in time_range_lower or "two_hours" in time_range_lower:
             return {"days": 0, "hours": 2, "minutes": 120}
         elif "last_hour" in time_range_lower or "one_hour" in time_range_lower:
             return {"days": 0, "hours": 1, "minutes": 60}
         elif "last_30_minutes" in time_range_lower:
             return {"days": 0, "hours": 0, "minutes": 30}
+        elif "last_4_weeks" in time_range_lower or "four_weeks" in time_range_lower:
+            return {"days": 28, "hours": 672, "minutes": 40320}
+        elif "last_2_weeks" in time_range_lower or "two_weeks" in time_range_lower:
+            return {"days": 14, "hours": 336, "minutes": 20160}
+        elif "last_week" in time_range_lower or "one_week" in time_range_lower:
+            return {"days": 7, "hours": 168, "minutes": 10080}
         else:
             # Default to last 24 hours
             return {"days": 1, "hours": 24, "minutes": 1440}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { AlertCircle, Trash2, Bell, BellOff, Clock, Activity, RefreshCw } from 'lucide-react';
+import { AlertCircle, Trash2, Bell, BellOff, Clock, Activity, RefreshCw, X, CheckCircle, XCircle } from 'lucide-react';
 
 const AlertsManager = ({ sessionId = "default" }) => {
   const [alerts, setAlerts] = useState([]);
@@ -11,8 +11,103 @@ const AlertsManager = ({ sessionId = "default" }) => {
   const [triggeredAlerts, setTriggeredAlerts] = useState([]);
   const [lastAlertCheck, setLastAlertCheck] = useState(null);
   const [alertActions, setAlertActions] = useState({}); // Track actions taken for each alert
+  const [expandedAlerts, setExpandedAlerts] = useState(new Set()); // Track which alerts are expanded
+  const [actionLogs, setActionLogs] = useState([]); // Track action logs
+  const [showActionLogs, setShowActionLogs] = useState(false); // Toggle action logs visibility
 
   console.log('AlertsManager initialized with sessionId:', sessionId);
+
+  // Toggle alert expansion
+  const toggleAlertExpansion = (alertId) => {
+    setExpandedAlerts(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(alertId)) {
+        newSet.delete(alertId);
+      } else {
+        newSet.add(alertId);
+      }
+      return newSet;
+    });
+  };
+
+  // Fetch action logs from API
+  const fetchActionLogs = async () => {
+    try {
+      console.log('Fetching action logs for session:', sessionId);
+      const response = await fetch(`http://127.0.0.1:8000/api/alerts/actions?session_id=${sessionId}`);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch action logs: ${response.status} ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      console.log('Action logs API Response:', data);
+      
+      if (data.success) {
+        setActionLogs(data.action_logs || []);
+      } else {
+        console.error('API returned error for action logs:', data.error);
+      }
+    } catch (err) {
+      console.error('Error fetching action logs:', err);
+    }
+  };
+
+  // Execute action and save to database
+  const executeAction = async (alertId, actionType) => {
+    try {
+      const timestamp = new Date().toISOString();
+      const newLog = {
+        id: `log_${Date.now()}`,
+        alert_id: alertId,
+        action_type: actionType,
+        status: 'executing',
+        timestamp: timestamp,
+        message: `Executing ${actionType} action...`,
+        session_id: sessionId
+      };
+      
+      // Add to logs immediately
+      setActionLogs(prev => [newLog, ...prev]);
+      
+      // Save to database
+      try {
+        const response = await fetch('http://127.0.0.1:8000/api/alerts/actions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(newLog)
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Failed to save action log: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        console.log('Action log saved:', result);
+      } catch (dbError) {
+        console.error('Error saving action log to database:', dbError);
+      }
+      
+      // Simulate action execution
+      setTimeout(() => {
+        const updatedLog = {
+          ...newLog,
+          status: 'completed',
+          message: `${actionType} action completed successfully`,
+          completed_at: new Date().toISOString()
+        };
+        
+        setActionLogs(prev => 
+          prev.map(log => log.id === newLog.id ? updatedLog : log)
+        );
+      }, 2000);
+      
+    } catch (err) {
+      console.error('Error executing action:', err);
+    }
+  };
 
   // Fetch alerts from API
   const fetchAlerts = async (showRefreshIndicator = false) => {
@@ -350,6 +445,11 @@ const AlertsManager = ({ sessionId = "default" }) => {
     return () => clearInterval(interval);
   }, [sessionId]);
 
+  // Fetch action logs when component mounts
+  useEffect(() => {
+    fetchActionLogs();
+  }, [sessionId]);
+
   // Monitor for triggered alerts every 30 seconds
   useEffect(() => {
     // Request notification permission on component mount
@@ -384,6 +484,20 @@ const AlertsManager = ({ sessionId = "default" }) => {
           <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
           Refresh
         </button>
+        
+        <button
+          onClick={() => setShowActionLogs(!showActionLogs)}
+          className={`flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors ${
+            showActionLogs 
+              ? 'text-purple-700 bg-purple-50 border border-purple-300 hover:bg-purple-100'
+              : 'text-gray-600 hover:text-gray-800 hover:bg-gray-100'
+          }`}
+          title="View action logs"
+        >
+          <Activity className="h-4 w-4 mr-2" />
+          Actions
+        </button>
+        
         {triggeredAlerts.length > 0 && (
           <button
             onClick={() => setTriggeredAlerts([])}
@@ -398,6 +512,77 @@ const AlertsManager = ({ sessionId = "default" }) => {
           Session: {sessionId.substring(0, 20)}...
         </div>
       </div>
+
+      {/* Action Logs Section */}
+      {showActionLogs && (
+        <div className="bg-white border border-gray-200 rounded-lg shadow-sm mb-6">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-800 flex items-center">
+                <Activity className="h-5 w-5 mr-2 text-purple-600" />
+                Action Logs
+              </h3>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={fetchActionLogs}
+                  className="px-3 py-1 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-md transition-colors"
+                >
+                  <RefreshCw className="h-4 w-4 mr-1" />
+                  Refresh
+                </button>
+                <button
+                  onClick={() => setShowActionLogs(false)}
+                  className="p-1 text-gray-400 hover:text-gray-600 rounded-md"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+          
+          <div className="p-6">
+            {actionLogs.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                <Activity className="h-12 w-12 mx-auto mb-4 text-gray-300" />
+                <p className="text-lg font-medium">No action logs yet</p>
+                <p className="text-sm">Actions will appear here when alerts are triggered</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {actionLogs.map((log) => (
+                  <div key={log.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border">
+                    <div className="flex-1">
+                      <div className="flex items-center space-x-3">
+                        <div className={`w-3 h-3 rounded-full ${
+                          log.status === 'completed' ? 'bg-green-500' :
+                          log.status === 'executing' ? 'bg-yellow-500 animate-pulse' :
+                          log.status === 'failed' ? 'bg-red-500' : 'bg-gray-400'
+                        }`}></div>
+                        <div>
+                          <p className="font-medium text-gray-800">{log.message}</p>
+                          <p className="text-sm text-gray-600">
+                            Alert ID: {log.alert_id} | Action: {log.action_type} | 
+                            {new Date(log.timestamp).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                        log.status === 'completed' ? 'bg-green-100 text-green-800' :
+                        log.status === 'executing' ? 'bg-yellow-100 text-yellow-800' :
+                        log.status === 'failed' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-800'
+                      }`}>
+                        {log.status.toUpperCase()}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Priority Alert Actions */}
       {triggeredAlerts.length > 0 && (
@@ -434,17 +619,25 @@ const AlertsManager = ({ sessionId = "default" }) => {
                             ) : (
                               <div className="flex space-x-1">
                                 <button
-                                  onClick={() => handleAlertAction(alert.alert_id, 'act')}
+                                  onClick={() => {
+                                    handleAlertAction(alert.alert_id, 'act');
+                                    executeAction(alert.alert_id, 'act');
+                                  }}
                                   className="flex items-center px-2 py-1 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 transition-colors"
                                   title="Act on this recommendation"
                                 >
+                                  <CheckCircle className="h-3 w-3 mr-1" />
                                   Act
                                 </button>
                                 <button
-                                  onClick={() => handleAlertAction(alert.alert_id, 'pass')}
+                                  onClick={() => {
+                                    handleAlertAction(alert.alert_id, 'pass');
+                                    executeAction(alert.alert_id, 'pass');
+                                  }}
                                   className="flex items-center px-2 py-1 bg-yellow-600 text-white rounded text-xs font-medium hover:bg-yellow-700 transition-colors"
                                   title="Pass on this recommendation"
                                 >
+                                  <XCircle className="h-3 w-3 mr-1" />
                                   Pass
                                 </button>
                               </div>
@@ -536,52 +729,165 @@ const AlertsManager = ({ sessionId = "default" }) => {
           </div>
         ) : (
           <div className="divide-y divide-gray-200">
-            {alerts.map((alert) => (
-              <div key={alert.id} className="p-6 hover:bg-gray-50 transition-colors">
-                <div className="flex items-center justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center mb-2">
-                      <Bell className="h-5 w-5 text-blue-600 mr-2" />
-                      <h3 className="text-lg font-medium text-gray-900">{alert.alert_name}</h3>
-                      <span className={`ml-3 px-2 py-1 text-xs font-medium rounded-full ${
-                        alert.is_active 
-                          ? 'bg-green-100 text-green-800' 
-                          : 'bg-gray-100 text-gray-800'
-                      }`}>
-                        {alert.is_active ? 'Active' : 'Inactive'}
-                      </span>
-                    </div>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-gray-600">
-                      <div>
-                        <span className="font-medium">Sensor:</span> {alert.sensor_type.replace('_', ' ').toUpperCase()}
+            {alerts.map((alert) => {
+              const isExpanded = expandedAlerts.has(alert.id);
+              return (
+                <div key={alert.id} className="border border-gray-200 rounded-lg mb-4 shadow-sm hover:shadow-md transition-shadow">
+                  {/* Alert Header - Clickable */}
+                  <div 
+                    className="p-6 cursor-pointer hover:bg-gray-50 transition-colors"
+                    onClick={() => toggleAlertExpansion(alert.id)}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center mb-2">
+                          <Bell className="h-5 w-5 text-blue-600 mr-2" />
+                          <h3 className="text-lg font-medium text-gray-900">{alert.alert_name}</h3>
+                          <span className={`ml-3 px-2 py-1 text-xs font-medium rounded-full ${
+                            alert.is_active 
+                              ? 'bg-green-100 text-green-800' 
+                              : 'bg-gray-100 text-gray-800'
+                          }`}>
+                            {alert.is_active ? '🟢 Active' : '🔴 Inactive'}
+                          </span>
+                        </div>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-gray-600">
+                          <div>
+                            <span className="font-medium">Sensor:</span> {alert.sensor_type.replace('_', ' ').toUpperCase()}
+                          </div>
+                          <div>
+                            <span className="font-medium">Condition:</span> {alert.condition_type} {alert.threshold_value}
+                          </div>
+                          <div>
+                            <span className="font-medium">Created:</span> {new Date(alert.created_at).toLocaleDateString()}
+                          </div>
+                        </div>
                       </div>
-                      <div>
-                        <span className="font-medium">Condition:</span> {alert.condition_type} {alert.threshold_value}
-                      </div>
-                      <div>
-                        <span className="font-medium">Created:</span> {new Date(alert.created_at).toLocaleDateString()}
+                      
+                      <div className="flex items-center space-x-2">
+                        {/* Expand/Collapse Icon */}
+                        <div className="transform transition-transform duration-200">
+                          {isExpanded ? (
+                            <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                            </svg>
+                          ) : (
+                            <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          )}
+                        </div>
+                        
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteAlert(alert.id);
+                          }}
+                          disabled={deletingId === alert.id}
+                          className="p-2 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-md transition-colors disabled:opacity-50"
+                          title="Delete alert"
+                        >
+                          {deletingId === alert.id ? (
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-600"></div>
+                          ) : (
+                            <Trash2 className="h-4 w-4" />
+                          )}
+                        </button>
                       </div>
                     </div>
                   </div>
                   
-                  <div className="flex items-center space-x-2">
-                    <button
-                      onClick={() => deleteAlert(alert.id)}
-                      disabled={deletingId === alert.id}
-                      className="p-2 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-md transition-colors disabled:opacity-50"
-                      title="Delete alert"
-                    >
-                      {deletingId === alert.id ? (
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-600"></div>
-                      ) : (
-                        <Trash2 className="h-4 w-4" />
-                      )}
-                    </button>
-                  </div>
+                  {/* Expandable Alert Details */}
+                  {isExpanded && (
+                    <div className="border-t border-gray-200 bg-gray-50 px-6 py-4 animate-in slide-in-from-top-2 duration-200">
+                      <div className="space-y-4">
+                        <h4 className="text-md font-semibold text-gray-800 mb-3">Alert Details</h4>
+                        
+                        {/* Basic Information */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="bg-white p-3 rounded-lg border">
+                            <div className="flex items-center mb-2">
+                              <Activity className="h-4 w-4 text-blue-500 mr-2" />
+                              <span className="font-medium text-gray-700">Sensor Information</span>
+                            </div>
+                            <p className="text-sm text-gray-600">
+                              <span className="font-medium">Type:</span> {alert.sensor_type.replace('_', ' ').toUpperCase()}
+                            </p>
+                            <p className="text-sm text-gray-600">
+                              <span className="font-medium">Condition:</span> {alert.condition_type} {alert.threshold_value}
+                            </p>
+                          </div>
+                          
+                          <div className="bg-white p-3 rounded-lg border">
+                            <div className="flex items-center mb-2">
+                              <Bell className="h-4 w-4 text-green-500 mr-2" />
+                              <span className="font-medium text-gray-700">Alert Settings</span>
+                            </div>
+                            <p className="text-sm text-gray-600">
+                              <span className="font-medium">Status:</span> {alert.is_active ? '🟢 Active' : '🔴 Inactive'}
+                            </p>
+                            <p className="text-sm text-gray-600">
+                              <span className="font-medium">Alert ID:</span> {alert.id}
+                            </p>
+                          </div>
+                        </div>
+                        
+                        {/* Enhanced Features (if available) */}
+                        {(alert.severity_level || alert.comparison_operator || alert.action_type || alert.time_window) && (
+                          <div className="bg-white p-3 rounded-lg border">
+                            <div className="flex items-center mb-2">
+                              <AlertCircle className="h-4 w-4 text-purple-500 mr-2" />
+                              <span className="font-medium text-gray-700">Enhanced Features</span>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                              {alert.severity_level && (
+                                <p className="text-gray-600">
+                                  <span className="font-medium">Severity:</span> {alert.severity_level.toUpperCase()}
+                                </p>
+                              )}
+                              {alert.comparison_operator && (
+                                <p className="text-gray-600">
+                                  <span className="font-medium">Operator:</span> {alert.comparison_operator}
+                                </p>
+                              )}
+                              {alert.action_type && (
+                                <p className="text-gray-600">
+                                  <span className="font-medium">Action:</span> {alert.action_type.toUpperCase()}
+                                </p>
+                              )}
+                              {alert.time_window && alert.time_window > 0 && (
+                                <p className="text-gray-600">
+                                  <span className="font-medium">Time Window:</span> {alert.time_window} minutes
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Timestamps */}
+                        <div className="bg-white p-3 rounded-lg border">
+                          <div className="flex items-center mb-2">
+                            <Clock className="h-4 w-4 text-orange-500 mr-2" />
+                            <span className="font-medium text-gray-700">Timestamps</span>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                            <p className="text-gray-600">
+                              <span className="font-medium">Created:</span> {new Date(alert.created_at).toLocaleString()}
+                            </p>
+                            {alert.updated_at && (
+                              <p className="text-gray-600">
+                                <span className="font-medium">Updated:</span> {new Date(alert.updated_at).toLocaleString()}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

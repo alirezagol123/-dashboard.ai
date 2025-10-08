@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 import sqlite3
 from dotenv import load_dotenv
+from .time_parser import parse_time_context
 
 # Load environment variables
 load_dotenv()
@@ -454,8 +455,14 @@ class UnifiedSemanticQueryService:
         """Initialize database engine for SQLite"""
         try:
             from sqlalchemy import create_engine
-            # For SQLite, create a proper SQLAlchemy engine
-            engine = create_engine("sqlite:///smart_dashboard.db")
+            # For SQLite, create a proper SQLAlchemy engine with Liara path
+            if os.getenv("LIARA_APP_ID"):
+                db_dir = "/var/lib/data"
+                os.makedirs(db_dir, exist_ok=True)
+                db_path = os.path.join(db_dir, "smart_dashboard.db")
+                engine = create_engine(f"sqlite:///{db_path}")
+            else:
+                engine = create_engine("sqlite:///smart_dashboard.db")
             return engine
         except Exception as e:
             logger.error(f"Database initialization error: {e}")
@@ -950,7 +957,15 @@ EXAMPLES:
     def _get_live_sensor_data(self, sensor_types: List[str] = None) -> List[Dict[str, Any]]:
         """Get live sensor data from SQLite database"""
         try:
-            conn = sqlite3.connect('smart_dashboard.db')
+            # Use proper database path for Liara
+            if os.getenv("LIARA_APP_ID"):
+                db_dir = "/var/lib/data"
+                os.makedirs(db_dir, exist_ok=True)
+                db_path = os.path.join(db_dir, "smart_dashboard.db")
+            else:
+                db_path = "smart_dashboard.db"
+            
+            conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
             
             if sensor_types:
@@ -1007,12 +1022,34 @@ EXAMPLES:
                 translated_query = self.translator.translate_query_to_english(query)
                 logger.info(f" LLM Translated Persian query to English: {translated_query}")
             
+            # Step 2.1: Parse time context using the new time_parser
+            time_context = parse_time_context(translated_query)
+            logger.info(f" Time context parsed: {time_context}")
+            
+            # Step 2.5: Detect comparison intent if not already set
+            if not is_comparison:
+                is_comparison = self._detect_comparison_intent(translated_query)
+                logger.info(f" Comparison detection result: {is_comparison}")
+            
             # NEW: Handle alert management intent
             if intent == "alert_management":
                 return self._process_alert_query(translated_query, session_id, detected_lang)
             
             # Step 3: Generate and execute SQL using LangChain SQLDatabaseChain
-            sql_result = self._generate_and_execute_sql(translated_query, feature_context, conversation_context, is_comparison)
+            sql_result = self._generate_and_execute_sql(translated_query, feature_context, conversation_context, is_comparison, time_context)
+            
+            # Step 3.1: Log SQL for debugging time filtering
+            if sql_result.get("sql"):
+                sql_query = sql_result["sql"]
+                logger.info(f"🔍 GENERATED SQL: {sql_query}")
+                
+                # Check if SQL contains proper time filtering
+                if "timestamp" in sql_query.lower() and ("between" in sql_query.lower() or ">=" in sql_query.lower()):
+                    logger.info(f"✅ SQL contains time filtering")
+                else:
+                    logger.warning(f"⚠️ SQL may be missing time filtering")
+            else:
+                logger.warning(f"⚠️ No SQL generated")
             
             # Step 3.5: Check if SQL execution failed
             if not sql_result.get("success", False):
@@ -1036,8 +1073,31 @@ EXAMPLES:
                 logger.error(f" BLOCKING RESPONSE: SQL execution failed, returning error instead of generating response")
                 return error_response
             
+            # Step 3.6: Check if no data was retrieved
+            data_points = len(sql_result.get("raw_data", []))
+            if data_points == 0:
+                logger.warning(f" NO DATA RETRIEVED: SQL executed successfully but returned 0 data points")
+                no_data_response = {
+                    "success": True,
+                    "response": "No data available for the requested time range and sensor type.",
+                    "data": [],
+                    "sql": sql_result.get("sql", ""),
+                    "validation": sql_result.get("validation", {}),
+                    "language": detected_lang,
+                    "feature_context": feature_context,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "data_points": 0
+                }
+                
+                # If original was Persian, translate to Persian
+                if detected_lang == 'fa':
+                    no_data_response["response"] = "هیچ داده‌ای برای بازه زمانی و نوع حسگر درخواستی موجود نیست."
+                
+                logger.warning(f" BLOCKING RESPONSE: No data retrieved, returning no-data response instead of generating fake data")
+                return no_data_response
+            
             # Step 4: Format result into structured JSON (only if SQL execution succeeded)
-            structured_result = self._format_structured_response(sql_result, translated_query, feature_context, intent, query, detected_lang)
+            structured_result = self._format_structured_response(sql_result, translated_query, feature_context, intent, query, detected_lang, time_context)
             
             # Step 5: If original was Persian, translate response back to Persian using LLM
             if detected_lang == 'fa':
@@ -1058,85 +1118,150 @@ EXAMPLES:
             }
     
     def _detect_comparison_intent(self, query: str) -> bool:
-        """Detect comparison intent from query (language-independent) - UNIFIED METHOD"""
+        """Detect comparison intent from query - English only (after LLM translation)"""
         query_lower = query.lower()
         
-        # Persian comparison keywords
-        persian_comparison = ["مقایسه", "با", "در مقابل", "بین", "نسبت به", "تفاوت"]
+        # STRICT comparison detection - only detect when user explicitly wants comparison
         
-        # English comparison keywords  
-        english_comparison = ["compare", "vs", "versus", "against", "between", "difference", "compared to"]
-        
-        # Check for comparison keywords
-        is_comparison = any(word in query_lower for word in persian_comparison + english_comparison)
-        
-        # Check for time comparison patterns
-        time_comparison_patterns = [
-            "امروز با دیروز", "today vs yesterday", "امروز و دیروز", "today and yesterday",
-            "این هفته با هفته گذشته", "this week vs last week", "هفته اخیر با هفته قبل",
-            "این ماه با ماه قبل", "this month vs last month", "ماه اخیر با ماه قبل",
-            "نسبت به هفته پیش", "compared to last week", "نسبت به ماه پیش", "compared to last month"
+        # 1. EXPLICIT comparison keywords (high confidence)
+        explicit_comparison_keywords = [
+            "compare", "comparison", "vs", "versus", "against", "between", "difference", "compared to",
+            "contrast", "versus", "against", "relative to", "in relation to"
         ]
         
-        is_time_comparison = any(pattern in query_lower for pattern in time_comparison_patterns)
+        # 2. EXPLICIT time comparison patterns (high confidence)
+        explicit_time_comparison_patterns = [
+            "today vs yesterday", "today and yesterday", "this week vs last week", "this month vs last month",
+            "this year vs last year", "current vs previous", "now vs then", "recent vs past",
+            "last week vs this week", "last month vs this month", "yesterday vs today",
+            "previous vs current", "old vs new", "past vs present", "past vs future"
+        ]
         
-        return is_comparison or is_time_comparison
+        # 3. EXPLICIT trend analysis patterns (medium confidence - only if they mention comparison)
+        trend_comparison_patterns = [
+            "trend comparison", "trend difference", "trend vs", "trend versus",
+            "growth trend vs", "growth trend versus", "growth trend comparison",
+            "trend analysis vs", "trend analysis versus", "trend analysis comparison"
+        ]
+        
+        # 4. EXPLICIT statistical comparison terms (medium confidence)
+        statistical_comparison_patterns = [
+            "correlation between", "relationship between", "connection between", "association between",
+            "variation between", "difference between", "comparison between"
+        ]
+        
+        # Check for explicit comparison keywords
+        has_explicit_comparison = any(word in query_lower for word in explicit_comparison_keywords)
+        
+        # Check for explicit time comparison patterns
+        has_explicit_time_comparison = any(pattern in query_lower for pattern in explicit_time_comparison_patterns)
+        
+        # Check for trend comparison patterns (only if they explicitly mention comparison)
+        has_trend_comparison = any(pattern in query_lower for pattern in trend_comparison_patterns)
+        
+        # Check for statistical comparison patterns
+        has_statistical_comparison = any(pattern in query_lower for pattern in statistical_comparison_patterns)
+        
+        # Additional checks for explicit comparison intent
+        has_explicit_between = "between" in query_lower and any(word in query_lower for word in ["and", "vs", "versus"])
+        has_explicit_vs = "vs" in query_lower or "versus" in query_lower
+        has_explicit_compare = "compare" in query_lower or "comparison" in query_lower
+        
+        # Only return True if we have STRONG evidence of comparison intent
+        is_comparison = (
+            has_explicit_comparison or 
+            has_explicit_time_comparison or 
+            has_trend_comparison or 
+            has_statistical_comparison or
+            has_explicit_between or
+            has_explicit_vs or
+            has_explicit_compare
+        )
+        
+        return is_comparison
     
-    def _expand_time_ranges(self, detected_range: str, time_config: Dict[str, Any]) -> List[str]:
-        """Expand user phrases into explicit time ranges for comparison"""
+    def _expand_time_ranges(self, detected_range: str, time_config: Dict[str, Any], is_comparison: bool = False) -> List[str]:
+        """Expand user phrases into explicit time ranges for comparison using canonical format"""
         try:
-            # Handle specific time expressions
-            if "hours_ago" in detected_range or "ساعت پیش" in detected_range:
+            import re
+            
+            # Only expand for actual comparison queries
+            if not is_comparison:
+                return [detected_range] if detected_range else []
+            
+            # Handle specific time expressions with canonical format
+            if "hours_ago" in detected_range:
                 # Extract number of hours
-                import re
-                hour_match = re.search(r'(\d+)_hours_ago|(\d+)\s*ساعت\s*پیش', detected_range)
+                hour_match = re.search(r'(\d+)_hours_ago', detected_range)
                 if hour_match:
-                    hours = int(hour_match.group(1) or hour_match.group(2))
-                    return [f"{hours}_hours_ago", f"{hours * 2}_hours_ago"]
+                    hours = int(hour_match.group(1))
+                    # For comparison queries, create multiple time periods
+                    # For 4 hours, create: 1_hours_ago, 2_hours_ago, 3_hours_ago, 4_hours_ago
+                    ranges = []
+                    for i in range(1, hours + 1):
+                        ranges.append(f"{i}_hours_ago")
+                    return ranges
             
-            elif "days_ago" in detected_range or "روز پیش" in detected_range:
+            # Handle time_config based expansion (when detected_range is not specific)
+            elif time_config and "hours" in time_config:
+                hours = time_config["hours"]
+                # For comparison queries, create multiple time periods
+                ranges = []
+                for i in range(1, hours + 1):
+                    ranges.append(f"{i}_hours_ago")
+                return ranges
+            
+            elif "days_ago" in detected_range:
                 # Extract number of days
-                import re
-                day_match = re.search(r'(\d+)_days_ago|(\d+)\s*روز\s*پیش', detected_range)
+                day_match = re.search(r'(\d+)_days_ago', detected_range)
                 if day_match:
-                    days = int(day_match.group(1) or day_match.group(2))
-                    return [f"{days}_days_ago", f"{days * 2}_days_ago"]
+                    days = int(day_match.group(1))
+                    # For comparison queries, create multiple time periods
+                    ranges = []
+                    for i in range(1, days + 1):
+                        ranges.append(f"{i}_days_ago")
+                    return ranges
             
-            elif "weeks_ago" in detected_range or "هفته پیش" in detected_range:
+            elif "weeks_ago" in detected_range:
                 # Extract number of weeks
-                import re
-                week_match = re.search(r'(\d+)_weeks_ago|(\d+)\s*هفته\s*پیش', detected_range)
+                week_match = re.search(r'(\d+)_weeks_ago', detected_range)
                 if week_match:
-                    weeks = int(week_match.group(1) or week_match.group(2))
-                    return [f"{weeks}_weeks_ago", f"{weeks * 2}_weeks_ago"]
+                    weeks = int(week_match.group(1))
+                    # For comparison queries, create multiple time periods
+                    ranges = []
+                    for i in range(1, weeks + 1):
+                        ranges.append(f"{i}_weeks_ago")
+                    return ranges
             
-            # Handle granular time expressions
+            # Handle granular time expressions - use canonical format consistently
             if time_config.get("granularity") == "hour":
                 hours = time_config.get("hours", 1)
-                return [f"{hours}_hours_ago", f"{hours * 2}_hours_ago"]
-            
+                # For comparison queries, create multiple time periods
+                ranges = []
+                for i in range(1, hours + 1):
+                    ranges.append(f"{i}_hours_ago")
+                return ranges
             elif time_config.get("granularity") == "day":
                 days = time_config.get("days", 1)
-                return [f"{days}_days_ago", f"{days * 2}_days_ago"]
-            
+                # For comparison queries, create multiple time periods
+                ranges = []
+                for i in range(1, days + 1):
+                    ranges.append(f"{i}_days_ago")
+                return ranges
             elif time_config.get("granularity") == "week":
-                weeks = time_config.get("days", 7) // 7
-                return [f"{weeks}_weeks_ago", f"{weeks * 2}_weeks_ago"]
+                weeks = time_config.get("weeks", 1)
+                # For comparison queries, create multiple time periods
+                ranges = []
+                for i in range(1, weeks + 1):
+                    ranges.append(f"{i}_weeks_ago")
+                return ranges
             
-            # Default fallback based on granularity
-            granularity = time_config.get("granularity", "day")
-            if granularity == "hour":
-                return ["1_hour_ago", "2_hours_ago"]
-            elif granularity == "day":
-                return ["1_day_ago", "2_days_ago"]
-            elif granularity == "week":
-                return ["1_week_ago", "2_weeks_ago"]
-            else:
-                return ["today", "yesterday"]
+            # Default fallback
+            return [detected_range]
                 
         except Exception as e:
             logger.error(f"Error expanding time ranges: {e}")
-            return ["today", "yesterday"]
+            return [detected_range]
 
     def _compute_previous_time_range(self, time_range: str) -> str:
         """Compute the previous time range for comparison queries"""
@@ -1165,20 +1290,61 @@ EXAMPLES:
         return range_mapping.get(time_range, f"previous_{time_range}")
     
     def _time_range_to_sql_filter(self, time_range: str, reference: str = "now") -> tuple:
-        """Convert time range to SQL filter with exact date boundaries"""
+        """Convert time range to SQL filter with smart time boundaries"""
         import datetime
+        import re
         
-        # Get current date for calculations
-        now = datetime.datetime.now()
+        # Get current date for calculations - use UTC for consistency
+        now = datetime.datetime.now(datetime.timezone.utc)
         
-        if time_range == "today":
+        # Handle canonical format: 1_hours_ago, 2_hours_ago, etc.
+        if time_range.endswith("_hours_ago"):
+            m = re.search(r'(\d+)_hours_ago', time_range)
+            hours = int(m.group(1)) if m else 1
+            # Correct semantics: X_hours_ago = window [now - X hours, now - (X-1) hours)
+            # 1_hours_ago → [now - 1h, now)
+            # 2_hours_ago → [now - 2h, now - 1h)
+            start_date = now - datetime.timedelta(hours=hours)
+            end_date = now - datetime.timedelta(hours=hours-1)
+            label = f"{hours}_hours_ago"
+            
+        # Handle canonical format: 1_days_ago, 2_days_ago, etc.
+        elif time_range.endswith("_days_ago"):
+            m = re.search(r'(\d+)_days_ago', time_range)
+            days = int(m.group(1)) if m else 1
+            # Correct semantics: X_days_ago = window [target_day 00:00:00, target_day +1 00:00:00)
+            # 1_days_ago → [yesterday 00:00, today 00:00)
+            # 2_days_ago → [day_before_yesterday 00:00, yesterday 00:00)
+            target = now - datetime.timedelta(days=days)
+            start_date = target.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = start_date + datetime.timedelta(days=1)
+            label = f"{days}_days_ago"
+            
+        # Handle canonical format: 1_weeks_ago, 2_weeks_ago, etc.
+        elif time_range.endswith("_weeks_ago"):
+            m = re.search(r'(\d+)_weeks_ago', time_range)
+            weeks = int(m.group(1)) if m else 1
+            # Correct semantics: X_weeks_ago = window [target_week_start, target_week_start + 7 days)
+            # 1_weeks_ago → [last_week_monday 00:00, this_week_monday 00:00)
+            # 2_weeks_ago → [week_before_last_monday 00:00, last_week_monday 00:00)
+            target = now - datetime.timedelta(weeks=weeks)
+            # Get start of week (Monday)
+            days_since_monday = target.weekday()
+            week_start = target - datetime.timedelta(days=days_since_monday)
+            start_date = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = start_date + datetime.timedelta(days=7)
+            label = f"{weeks}_weeks_ago"
+            
+        # Handle legacy formats for backward compatibility
+        elif time_range == "today":
             start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            end_date = start_date + datetime.timedelta(days=1)
             label = "today"
         elif time_range == "yesterday":
+            # Yesterday = yesterday 00:00 to today 00:00
             yesterday = now - datetime.timedelta(days=1)
             start_date = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
+            end_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
             label = "yesterday"
         elif time_range.startswith("last_") and time_range.endswith("_days"):
             # e.g., last_3_days -> rolling N days
@@ -1195,16 +1361,17 @@ EXAMPLES:
                 n = int(time_range.split("_")[1])
             except Exception:
                 n = 3
+            # Smart logic: previous_3_days = 3 days before the last 3 days
             start_date = now - datetime.timedelta(days=2*n)
             end_date = now - datetime.timedelta(days=n)
-            label = time_range
+            label = f"previous_{n}_days"
         elif time_range == "last_week":
             # Last 7 days (rolling)
             start_date = now - datetime.timedelta(days=7)
             end_date = now
             label = "last_week"
         elif time_range == "previous_week":
-            # Previous 7 days before last week
+            # Previous week = 7 days before last week
             start_date = now - datetime.timedelta(days=14)
             end_date = now - datetime.timedelta(days=7)
             label = "previous_week"
@@ -1214,7 +1381,7 @@ EXAMPLES:
             end_date = now
             label = "last_month"
         elif time_range == "previous_month":
-            # Previous 30 days before last month
+            # Previous month = 30 days before last month
             start_date = now - datetime.timedelta(days=60)
             end_date = now - datetime.timedelta(days=30)
             label = "previous_month"
@@ -1223,61 +1390,26 @@ EXAMPLES:
             end_date = now
             label = "last_3_days"
         elif time_range == "previous_3_days":
+            # Previous 3 days = 3 days before the last 3 days
             start_date = now - datetime.timedelta(days=6)
             end_date = now - datetime.timedelta(days=3)
             label = "previous_3_days"
-        elif time_range.startswith("days_ago_"):
-            # Handle custom "days_ago_X" format
-            days = int(time_range.split("_")[2])
-            target_date = now - datetime.timedelta(days=days)
-            start_date = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-            label = f"{days}_days_ago"
-        elif time_range.endswith("_hours_ago"):
-            # Handle expanded time ranges like "4_hours_ago", "8_hours_ago"
-            try:
-                hours = int(time_range.split("_")[0])
-                start_date = now - datetime.timedelta(hours=hours)
-                end_date = now
-                label = time_range
-            except Exception:
-                start_date = now - datetime.timedelta(hours=4)
-                end_date = now
-                label = "4_hours_ago"
-        elif time_range.endswith("_days_ago"):
-            # Handle expanded time ranges like "2_days_ago", "4_days_ago"
-            try:
-                days = int(time_range.split("_")[0])
-                start_date = now - datetime.timedelta(days=days)
-                end_date = now
-                label = time_range
-            except Exception:
-                start_date = now - datetime.timedelta(days=2)
-                end_date = now
-                label = "2_days_ago"
-        elif time_range.endswith("_weeks_ago"):
-            # Handle expanded time ranges like "1_weeks_ago", "2_weeks_ago"
-            try:
-                weeks = int(time_range.split("_")[0])
-                days = weeks * 7
-                start_date = now - datetime.timedelta(days=days)
-                end_date = now
-                label = time_range
-            except Exception:
-                start_date = now - datetime.timedelta(days=7)
-                end_date = now
-                label = "1_weeks_ago"
         else:
             # Default to last 24 hours
             start_date = now - datetime.timedelta(days=1)
             end_date = now
             label = time_range
         
-        # Format for SQLite (handle ISO format with microseconds)
+        # Format for SQLite with exclusive end semantics - ensure UTC
+        if start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=datetime.timezone.utc)
+        if end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=datetime.timezone.utc)
+            
         start_iso = start_date.strftime("%Y-%m-%dT%H:%M:%S")
         end_iso = end_date.strftime("%Y-%m-%dT%H:%M:%S")
         
-        # SQLite condition - use >= and < for better ISO timestamp handling
+        # Use exclusive end semantics: >= start AND < end
         sqlite_condition = f"timestamp >= '{start_iso}' AND timestamp < '{end_iso}'"
         
         return (label, start_iso, end_iso, sqlite_condition)
@@ -1352,7 +1484,7 @@ EXAMPLES:
                     detected_range = time_ranges[0] if time_ranges else time_config.get("range", "last_week")
                     
                     # EXPAND TIME RANGES: Convert user phrases to explicit ranges
-                    expanded_ranges = self._expand_time_ranges(detected_range, time_config)
+                    expanded_ranges = self._expand_time_ranges(detected_range, time_config, is_comparison)
                     print(f" EXPANDED TIME RANGES: {expanded_ranges}")
                     
                     # Set appropriate grouping based on time_config granularity (prioritize over detected_range)
@@ -1414,32 +1546,29 @@ EXAMPLES:
                 }
             
             # Update based on time configuration (but preserve expanded ranges for comparison queries)
-            if time_config and not (semantic_json.get("comparison", False) and isinstance(semantic_json.get("time_range"), list)):
+            # CRITICAL: Do not override time_range for comparison queries that already have a list
+            is_comparison_with_list = (semantic_json.get("comparison", False) and 
+                                    isinstance(semantic_json.get("time_range"), list))
+            
+            logger.debug(f"Time config override check: is_comparison_with_list={is_comparison_with_list}, "
+                        f"comparison={semantic_json.get('comparison')}, "
+                        f"time_range_type={type(semantic_json.get('time_range'))}, "
+                        f"time_range={semantic_json.get('time_range')}")
+            
+            if time_config and not is_comparison_with_list:
                 if "days" in time_config:
-                    if time_config["days"] <= 1:
-                        semantic_json["time_range"] = "last_24_hours"
-                    elif time_config["days"] <= 3:
-                        semantic_json["time_range"] = "last_3_days"
-                    elif time_config["days"] <= 7:
-                        semantic_json["time_range"] = "last_7_days"
-                    else:
-                        semantic_json["time_range"] = "last_30_days"
+                    days = time_config["days"]
+                    semantic_json["time_range"] = self._map_days_to_time_range(days)
                 
-                if "hours" in time_config:
-                    if time_config["hours"] <= 1:
-                        semantic_json["time_range"] = "last_hour"
-                    elif time_config["hours"] <= 2:
-                        semantic_json["time_range"] = "last_2_hours"
-                    else:
-                        semantic_json["time_range"] = "last_24_hours"
+            if "hours" in time_config:
+                hours = time_config["hours"]
+                semantic_json["time_range"] = self._map_hours_to_time_range(hours)
                 
                 if "minutes" in time_config:
-                    if time_config["minutes"] <= 30:
-                        semantic_json["time_range"] = "last_30_minutes"
-                    else:
-                        semantic_json["time_range"] = "last_hour"
+                    minutes = time_config["minutes"]
+                    semantic_json["time_range"] = self._map_minutes_to_time_range(minutes)
                 
-                # Set grouping based on granularity
+                # Set grouping based on granularity (only for non-comparison queries)
                 granularity = time_config.get("granularity", "day")
                 print(f" GRANULARITY: {granularity}")
                 if granularity == "day":
@@ -1451,6 +1580,8 @@ EXAMPLES:
                 elif granularity == "week":
                     semantic_json["grouping"] = "by_week"
                 print(f" GROUPING SET TO: {semantic_json['grouping']}")
+            elif is_comparison_with_list:
+                print(f" PRESERVING COMPARISON TIME_RANGE: {semantic_json.get('time_range')}")
             
             # Update aggregation based on query patterns
             if any(word in query_lower for word in ["average", "mean", "avg", "میانگین", "متوسط"]):
@@ -1471,96 +1602,106 @@ EXAMPLES:
             return self._get_fallback_semantic_json(sensor_type)
     
     def _detect_comparison_time_ranges(self, english_query: str, query_lower: str) -> List[str]:
-        """Detect multiple time ranges in comparison queries"""
+        """ROBUST COMPARISON TIME RANGE DETECTOR: Handle ALL comparison scenarios intelligently"""
         time_ranges = []
         
-        # Persian time range patterns
-        persian_patterns = {
-            "امروز": "today",
-            "دیروز": "yesterday", 
-            "هفته گذشته": "last_week",
-            "هفته اخیر": "last_week",
-            "این هفته": "this_week",
-            "ماه گذشته": "last_month",
-            "ماه اخیر": "last_month",
-            "این ماه": "this_month",
-            "سال گذشته": "last_year",
-            "امسال": "this_year"
-        }
+        # Only detect comparison time ranges if the query explicitly mentions comparison
+        has_explicit_comparison = any(word in query_lower for word in [
+            "compare", "comparison", "vs", "versus", "against", "between", "difference", "compared to",
+            "contrast", "relative to", "in relation to"
+        ])
         
-        # Handle "X days ago" patterns
+        if not has_explicit_comparison:
+            return time_ranges  # Return empty list for non-comparison queries
+        
+        # ROBUST COMPARISON PATTERNS - Handle ALL comparison scenarios
         import re
-        days_ago_match = re.search(r'(\d+)\s*روز\s*پیش', query_lower)
-        if days_ago_match:
-            days = int(days_ago_match.group(1))
-            # For "X days ago" comparisons, create proper comparison pair
-            # e.g., "5 days ago" should compare 5 days ago vs 6 days ago
-            time_ranges = [f"days_ago_{days}", f"days_ago_{days + 1}"]
+        
+        # 1. "Compare X vs Y" patterns
+        compare_vs_pattern = re.search(r'compare\s+(.+?)\s+(?:vs|versus|against)\s+(.+?)', query_lower)
+        if compare_vs_pattern:
+            period1 = compare_vs_pattern.group(1).strip()
+            period2 = compare_vs_pattern.group(2).strip()
+            time_ranges = [self._map_time_period_to_range(period1), self._map_time_period_to_range(period2)]
+            return time_ranges
+        
+        # 2. "Between X and Y" patterns
+        between_pattern = re.search(r'between\s+(.+?)\s+and\s+(.+?)', query_lower)
+        if between_pattern:
+            period1 = between_pattern.group(1).strip()
+            period2 = between_pattern.group(2).strip()
+            time_ranges = [self._map_time_period_to_range(period1), self._map_time_period_to_range(period2)]
+            return time_ranges
+        
+        # 3. "X vs Y" patterns
+        vs_pattern = re.search(r'(.+?)\s+(?:vs|versus)\s+(.+?)', query_lower)
+        if vs_pattern:
+            period1 = vs_pattern.group(1).strip()
+            period2 = vs_pattern.group(2).strip()
+            time_ranges = [self._map_time_period_to_range(period1), self._map_time_period_to_range(period2)]
+            return time_ranges
+        
+        # 4. "X hours ago" patterns (only for comparison)
+        hours_ago_match = re.search(r'(\d+)\s*hours?\s*ago', query_lower)
+        if hours_ago_match:
+            hours = int(hours_ago_match.group(1))
+            time_ranges = [f"hours_ago_{hours}", f"hours_ago_{hours + 1}"]
             return time_ranges
 
-        # Handle Persian "last/past N days" and return pair for comparison
-        fa_last_days = re.search(r'(?:آخر|گذشته|اخیر|پیش)\s*(\d+)\s*روز', query_lower)
-        if fa_last_days:
-            n = int(fa_last_days.group(1))
+        # 5. "last/past N days" patterns (only for comparison)
+        last_days = re.search(r'(?:last|past)\s*(\d+)\s*days?', query_lower)
+        if last_days:
+            n = int(last_days.group(1))
             time_ranges = [f"last_{n}_days", f"previous_{n}_days"]
             return time_ranges
         
-        # English time range patterns
-        english_patterns = {
+        # 6. "last/past N hours" patterns (only for comparison)
+        last_hours = re.search(r'(?:last|past)\s*(\d+)\s*hours?', query_lower)
+        if last_hours:
+            n = int(last_hours.group(1))
+            time_ranges = [f"last_{n}_hours", f"previous_{n}_hours"]
+            return time_ranges
+
+        return time_ranges
+    
+    def _map_time_period_to_range(self, period: str) -> str:
+        """Map a time period description to a time range"""
+        period_lower = period.lower().strip()
+        
+        # Map common time period descriptions
+        period_mapping = {
             "today": "today",
-            "yesterday": "yesterday",
+            "yesterday": "yesterday", 
             "last week": "last_week",
             "this week": "this_week",
-            "past week": "last_week",
             "last month": "last_month",
             "this month": "this_month",
-            "past month": "last_month",
             "last year": "last_year",
-            "this year": "this_year"
+            "this year": "this_year",
+            "last hour": "last_hour",
+            "this hour": "this_hour",
+            "last day": "last_day",
+            "this day": "this_day"
         }
         
-        # Handle English "X days ago" patterns
-        days_ago_match_en = re.search(r'(\d+)\s*days?\s*ago', query_lower)
-        if days_ago_match_en:
-            days = int(days_ago_match_en.group(1))
-            # For "X days ago" comparisons, create proper comparison pair
-            time_ranges = [f"days_ago_{days}", f"days_ago_{days + 1}"]
-            return time_ranges
-
-        # Handle English "last/past N days" for comparison
-        en_last_days = re.search(r'(last|past)\s*(\d+)\s*days?', query_lower)
-        if en_last_days:
-            n = int(en_last_days.group(2))
-            time_ranges = [f"last_{n}_days", f"previous_{n}_days"]
-            return time_ranges
+        # Check for exact matches first
+        if period_lower in period_mapping:
+            return period_mapping[period_lower]
         
-        # Check for Persian patterns
-        for persian_term, english_term in persian_patterns.items():
-            if persian_term in query_lower:
-                time_ranges.append(english_term)
+        # Check for "last N days/hours" patterns
+        import re
+        last_days_match = re.search(r'last\s+(\d+)\s+days?', period_lower)
+        if last_days_match:
+            n = int(last_days_match.group(1))
+            return f"last_{n}_days"
         
-        # Check for English patterns
-        for english_term, mapped_term in english_patterns.items():
-            if english_term in query_lower:
-                time_ranges.append(mapped_term)
+        last_hours_match = re.search(r'last\s+(\d+)\s+hours?', period_lower)
+        if last_hours_match:
+            n = int(last_hours_match.group(1))
+            return f"last_{n}_hours"
         
-        # Promote common comparison pairs when only single endpoint found
-        if "this_week" in time_ranges and "last_week" not in time_ranges:
-            time_ranges.append("last_week")
-        if "this_month" in time_ranges and "last_month" not in time_ranges:
-            time_ranges.append("last_month")
-        if "today" in time_ranges and "yesterday" not in time_ranges:
-            time_ranges.append("yesterday")
-        
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_ranges = []
-        for range_val in time_ranges:
-            if range_val not in seen:
-                seen.add(range_val)
-                unique_ranges.append(range_val)
-        
-        return unique_ranges
+        # Default fallback
+        return period_lower
 
     def _process_comparison_data(self, raw_data: List[Dict[str, Any]], time_ranges: List[str]) -> Dict[str, Any]:
         """Process comparison data to compute deltas and percentage changes"""
@@ -1711,7 +1852,7 @@ EXAMPLES:
                 "fallback_reason": validation_result.get("error", "unknown") if validation_result else "default"
             }
     
-    def _generate_and_execute_sql(self, english_query: str, feature_context: str, conversation_context: str = "", is_comparison: bool = False) -> Dict[str, Any]:
+    def _generate_and_execute_sql(self, english_query: str, feature_context: str, conversation_context: str = "", is_comparison: bool = False, time_context: Dict[str, Any] = None) -> Dict[str, Any]:
         """Generate and execute SQL query using semantic JSON flow with fallback mechanism"""
         try:
             logger.info(f" Generating SQL using semantic JSON flow for: '{english_query}' (comparison: {is_comparison})")
@@ -1722,9 +1863,13 @@ EXAMPLES:
             logger.info(f" Generated semantic JSON: {semantic_json}")
             
             # Step 2: Convert semantic JSON to SQL using QueryBuilder
+            # Include time_context in semantic_json metadata
+            if time_context:
+                semantic_json["time_context"] = time_context
             sql_query = self.query_builder.build_sql_from_semantic_json(semantic_json)
             print(f" SQL FROM SEMANTIC JSON: {sql_query}")
             logger.info(f" Generated SQL from semantic JSON: {sql_query}")
+            logger.debug(f"SQL generation details: semantic_json={semantic_json} -> sql={sql_query}")
             
             # Step 3: Execute SQL with validation
             execution_result = self._execute_direct_sql(sql_query)
@@ -1773,8 +1918,18 @@ EXAMPLES:
                     return fallback_result
                 else:
                     logger.warning(f" Fallback also returned no data")
+                    # CRITICAL: Return failure when no data is found
+                    return {
+                        "sql": sql_query,
+                        "raw_data": [],
+                        "success": False,
+                        "error": "No data available for the requested time range and sensor type",
+                        "validation": execution_result.get("validation", {}),
+                        "semantic_json": semantic_json,
+                        "refined_by_llm": False
+                    }
             
-            # Step 8: Return successful result
+            # Step 8: Return successful result only if we have data
             return {
                 "sql": sql_query,
                 "raw_data": execution_result["data"],
@@ -2851,6 +3006,9 @@ RESPONSE:"""
                     logger.info(f" NEW SYNONYMS DETECTED for developer to add to ontology:")
                     for synonym in result["new_synonyms"]:
                         logger.info(f"   - '{synonym}' -> '{result['sensor_type']}'")
+                    
+                    # Persist synonyms to ontology for future use
+                    self._persist_synonyms_to_ontology(result["new_synonyms"], result["sensor_type"])
                 
                 # Ensure required fields
                 return {
@@ -2961,15 +3119,211 @@ RESPONSE:"""
             return self._generate_simple_sql(english_query)
     
     def _parse_time_expression(self, query: str, language: str = "en") -> Dict[str, Any]:
-        """Parse time expressions and return time window configuration with enhanced Persian numeral support"""
+        """ROBUST TIME PARSER: Parse ANY time expression intelligently using regex patterns"""
         try:
+            import re
             query_lower = query.lower()
             
-            # Persian numeral mapping
-            persian_numerals = {
-                "یک": 1, "دو": 2, "سه": 3, "چهار": 4, "پنج": 5, "شش": 6, "هفت": 7, "هشت": 8, "نه": 9, "ده": 10,
-                "۱": 1, "۲": 2, "۳": 3, "۴": 4, "۵": 5, "۶": 6, "۷": 7, "۸": 8, "۹": 9, "۰": 0
-            }
+            # UNIVERSAL TIME PARSER - Handles ALL time expressions with regex
+            time_patterns = [
+                # Hours patterns (most specific first)
+                (r'(\d+)\s*hours?\s*(?:ago|back|earlier|before)', self._parse_hours_ago),
+                (r'(?:last|past|previous|recent)\s*(\d+)\s*hours?', self._parse_hours_last),
+                (r'(?:in|for|over|during)\s*(?:the\s*)?(?:last|past|previous|recent)\s*(\d+)\s*hours?', self._parse_hours_last),
+                (r'(?:this|current)\s*(\d+)\s*hours?', self._parse_hours_current),
+                
+                # Word number patterns for hours
+                (r'(?:last|past|previous|recent)\s*(two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*hours?', self._parse_hours_last_word),
+                
+                # Days patterns
+                (r'(\d+)\s*days?\s*(?:ago|back|earlier|before)', self._parse_days_ago),
+                (r'(?:last|past|previous|recent)\s*(\d+)\s*days?', self._parse_days_last),
+                (r'(?:in|for|over|during)\s*(?:the\s*)?(?:last|past|previous|recent)\s*(\d+)\s*days?', self._parse_days_last),
+                (r'(?:this|current)\s*(\d+)\s*days?', self._parse_days_current),
+                
+                # Weeks patterns
+                (r'(\d+)\s*weeks?\s*(?:ago|back|earlier|before)', self._parse_weeks_ago),
+                (r'(?:last|past|previous|recent)\s*(\d+)\s*weeks?', self._parse_weeks_last),
+                (r'(?:in|for|over|during)\s*(?:the\s*)?(?:last|past|previous|recent)\s*(\d+)\s*weeks?', self._parse_weeks_last),
+                (r'(?:this|current)\s*(\d+)\s*weeks?', self._parse_weeks_current),
+                
+                # Minutes patterns
+                (r'(\d+)\s*minutes?\s*(?:ago|back|earlier|before)', self._parse_minutes_ago),
+                (r'(?:last|past|previous|recent)\s*(\d+)\s*minutes?', self._parse_minutes_last),
+                
+                # Special patterns
+                (r'(?:today|this\s*day)', self._parse_today),
+                (r'(?:yesterday|yesterdays)', self._parse_yesterday),
+                (r'(?:this\s*week|current\s*week)', self._parse_this_week),
+                (r'(?:last\s*week|previous\s*week)', self._parse_last_week),
+                (r'(?:this\s*month|current\s*month)', self._parse_this_month),
+                (r'(?:last\s*month|previous\s*month)', self._parse_last_month),
+            ]
+            
+            # Try each pattern in order
+            for pattern, parser_func in time_patterns:
+                match = re.search(pattern, query_lower)
+                if match:
+                    result = parser_func(match, query_lower)
+                    if result:
+                        return result
+            
+            # Default fallback
+            return {"days": 1, "hours": 24, "minutes": 1440, "granularity": "day"}
+            
+        except Exception as e:
+            logger.error(f"Error in robust time parser: {e}")
+            return {"days": 1, "hours": 24, "minutes": 1440, "granularity": "day"}
+    
+    def _parse_hours_ago(self, match, query_lower):
+        """Parse X hours ago patterns"""
+        hours = int(match.group(1))
+        return {"hours": hours, "granularity": "hour", "offset": -hours}
+    
+    def _parse_hours_last(self, match, query_lower):
+        """Parse last X hours patterns"""
+        hours = int(match.group(1))
+        return {"hours": hours, "granularity": "hour"}
+    
+    def _parse_hours_last_word(self, match, query_lower):
+        """Parse last X hours patterns with word numbers"""
+        word_to_number = {
+            "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+            "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12
+        }
+        word = match.group(1)
+        hours = word_to_number.get(word, 2)  # Default to 2 if not found
+        return {"hours": hours, "granularity": "hour"}
+    
+    def _parse_hours_current(self, match, query_lower):
+        """Parse this X hours patterns"""
+        hours = int(match.group(1))
+        return {"hours": hours, "granularity": "hour"}
+    
+    def _parse_days_ago(self, match, query_lower):
+        """Parse X days ago patterns"""
+        days = int(match.group(1))
+        return {"days": days, "granularity": "day", "offset": -days}
+    
+    def _parse_days_last(self, match, query_lower):
+        """Parse last X days patterns"""
+        days = int(match.group(1))
+        return {"days": days, "granularity": "day"}
+    
+    def _parse_days_current(self, match, query_lower):
+        """Parse this X days patterns"""
+        days = int(match.group(1))
+        return {"days": days, "granularity": "day"}
+    
+    def _parse_weeks_ago(self, match, query_lower):
+        """Parse X weeks ago patterns"""
+        weeks = int(match.group(1))
+        return {"days": weeks * 7, "granularity": "week", "offset": -(weeks * 7)}
+    
+    def _parse_weeks_last(self, match, query_lower):
+        """Parse last X weeks patterns"""
+        weeks = int(match.group(1))
+        return {"days": weeks * 7, "granularity": "week"}
+    
+    def _parse_weeks_current(self, match, query_lower):
+        """Parse this X weeks patterns"""
+        weeks = int(match.group(1))
+        return {"days": weeks * 7, "granularity": "week"}
+    
+    def _parse_minutes_ago(self, match, query_lower):
+        """Parse X minutes ago patterns"""
+        minutes = int(match.group(1))
+        return {"minutes": minutes, "granularity": "minute", "offset": -minutes}
+    
+    def _parse_minutes_last(self, match, query_lower):
+        """Parse last X minutes patterns"""
+        minutes = int(match.group(1))
+        return {"minutes": minutes, "granularity": "minute"}
+    
+    def _parse_today(self, match, query_lower):
+        """Parse today patterns"""
+        return {"days": 1, "granularity": "day"}
+    
+    def _parse_yesterday(self, match, query_lower):
+        """Parse yesterday patterns"""
+        return {"days": 1, "granularity": "day", "offset": -1}
+    
+    def _parse_this_week(self, match, query_lower):
+        """Parse this week patterns"""
+        return {"days": 7, "granularity": "week"}
+    
+    def _parse_last_week(self, match, query_lower):
+        """Parse last week patterns"""
+        return {"days": 7, "granularity": "week", "offset": -7}
+    
+    def _parse_this_month(self, match, query_lower):
+        """Parse this month patterns"""
+        return {"days": 30, "granularity": "day"}
+    
+    def _parse_last_month(self, match, query_lower):
+        """Parse last month patterns"""
+        return {"days": 30, "granularity": "day", "offset": -30}
+    
+    def _map_hours_to_time_range(self, hours: int) -> str:
+        """ROBUST HOURS MAPPING: Map any number of hours to the correct time range"""
+        if hours <= 1:
+            return "last_hour"
+        elif hours <= 2:
+            return "last_2_hours"
+        elif hours <= 4:
+            return "last_4_hours"
+        elif hours <= 6:
+            return "last_6_hours"
+        elif hours <= 8:
+            return "last_8_hours"
+        elif hours <= 12:
+            return "last_12_hours"
+        elif hours <= 24:
+            return "last_24_hours"
+        elif hours <= 48:
+            return "last_2_days"
+        elif hours <= 72:
+            return "last_3_days"
+        elif hours <= 168:  # 1 week
+            return "last_week"
+        else:
+            return "last_30_days"
+    
+    def _map_days_to_time_range(self, days: int) -> str:
+        """ROBUST DAYS MAPPING: Map any number of days to the correct time range"""
+        if days <= 1:
+            return "last_24_hours"
+        elif days <= 2:
+            return "last_2_days"
+        elif days <= 3:
+            return "last_3_days"
+        elif days <= 7:
+            return "last_week"
+        elif days <= 14:
+            return "last_2_weeks"
+        elif days <= 30:
+            return "last_month"
+        else:
+            return "last_30_days"
+    
+    def _map_minutes_to_time_range(self, minutes: int) -> str:
+        """ROBUST MINUTES MAPPING: Map any number of minutes to the correct time range"""
+        if minutes <= 30:
+            return "last_30_minutes"
+        elif minutes <= 60:
+            return "last_hour"
+        elif minutes <= 120:
+            return "last_2_hours"
+        elif minutes <= 240:
+            return "last_4_hours"
+        elif minutes <= 360:
+            return "last_6_hours"
+        elif minutes <= 480:
+            return "last_8_hours"
+        elif minutes <= 720:
+            return "last_12_hours"
+        else:
+            return "last_24_hours"
             
             # Persian time patterns with granularity and enhanced numeral support
             if language == "fa":
@@ -3226,33 +3580,35 @@ RESPONSE:"""
                     return config
             
             # Check for generic "last" patterns with better context detection
-            if "اخیر" in query_lower or "گذشته" in query_lower or "last" in query_lower or "past" in query_lower:
+            if "last" in query_lower or "past" in query_lower:
                 # Check for week context
-                if any(word in query_lower for word in ["هفته", "week"]):
+                if any(word in query_lower for word in ["week", "weeks"]):
                     logger.info(f" Generic 'last week' pattern detected, using 7 days")
                     return {"days": 7, "granularity": "week"}
                 # Check for month context
-                elif any(word in query_lower for word in ["ماه", "month"]):
+                elif any(word in query_lower for word in ["month", "months"]):
                     logger.info(f" Generic 'last month' pattern detected, using 30 days")
                     return {"days": 30, "granularity": "day"}
                 # Check for day context
-                elif any(word in query_lower for word in ["روز", "day"]):
+                elif any(word in query_lower for word in ["day", "days"]):
                     logger.info(f" Generic 'last day' pattern detected, using 1 day")
                     return {"days": 1, "granularity": "day"}
-                # Check for hour context
-                elif any(word in query_lower for word in ["ساعت", "hour"]):
-                    logger.info(f" Generic 'last hour' pattern detected, using 1 hour")
+                # Check for hour context - extract specific number of hours
+                elif any(word in query_lower for word in ["hour", "hours"]):
+                    # Try to extract specific number of hours
+                    import re
+                    hour_match = re.search(r'(\d+)\s*hours?', query_lower)
+                    if hour_match:
+                        hours = int(hour_match.group(1))
+                        logger.info(f" Generic 'last {hours} hours' pattern detected, using {hours} hours")
+                        return {"hours": hours, "granularity": "hour"}
+                    else:
+                         logger.info(f" Generic 'last hour' pattern detected, using 1 hour")
                     return {"hours": 1, "granularity": "hour"}
                 # Default fallback
                 else:
                     logger.info(f" Generic 'last' pattern detected, defaulting to 3 days")
                     return {"days": 3, "granularity": "day"}
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f" Error parsing time expression: {e}")
-            return None
     
     def _llm_refine_sql(self, original_query: str, generated_sql: str, execution_summary: str, ontology_snippet: str, schema: str) -> Dict[str, Any]:
         """Use LLM to refine SQL query when execution returns empty results"""
@@ -3585,7 +3941,15 @@ Always provide reasoning and confidence score."""
             logger.info(f" SQL Validation Passed: {validation_result['message']}")
             
             # Step 2: Connect to database
-            conn = sqlite3.connect('smart_dashboard.db')
+            # Use proper database path for Liara
+            if os.getenv("LIARA_APP_ID"):
+                db_dir = "/var/lib/data"
+                os.makedirs(db_dir, exist_ok=True)
+                db_path = os.path.join(db_dir, "smart_dashboard.db")
+            else:
+                db_path = "smart_dashboard.db"
+            
+            conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
             
             # Step 3: Execute the query with error handling and query logging
@@ -3828,7 +4192,7 @@ Always provide reasoning and confidence score."""
             "success": True
         }
     
-    def _format_structured_response(self, sql_result: Dict[str, Any], english_query: str, feature_context: str, intent: str = "data_query", original_query: str = None, detected_lang: str = "en") -> Dict[str, Any]:
+    def _format_structured_response(self, sql_result: Dict[str, Any], english_query: str, feature_context: str, intent: str = "data_query", original_query: str = None, detected_lang: str = "en", time_context: Dict[str, Any] = None) -> Dict[str, Any]:
         """Format result into unified structured JSON with consistent schema"""
         # Initialize base response structure
         base_response = {
@@ -3890,8 +4254,8 @@ Always provide reasoning and confidence score."""
             if is_comparison and isinstance(time_ranges, list) and len(time_ranges) > 1:
                 comparison_data = self._process_comparison_data(raw_data, time_ranges)
             
-            # Generate summary using LLM with metrics and comparison data
-            summary = self._generate_summary(english_query, raw_data, feature_context, intent, metrics, comparison_data)
+            # Generate summary using LLM with metrics and comparison data and chart info
+            summary = self._generate_summary(english_query, raw_data, feature_context, intent, metrics, comparison_data, chart_request, time_context)
             
             # Process chart data if requested
             chart_data = None
@@ -3912,7 +4276,9 @@ Always provide reasoning and confidence score."""
             # Update base response with actual data
             base_response.update({
                 "success": True,
+                "response": summary,  # CRITICAL FIX: Add "response" field for frontend compatibility
                 "summary": summary,
+                "data": raw_data,  # CRITICAL FIX: Add "data" field for frontend compatibility
                 "metrics": metrics,
                 "raw_data": raw_data,
                 "chart": chart_data,
@@ -4148,8 +4514,8 @@ Always provide reasoning and confidence score."""
         
         return error_mappings[error_type]
     
-    def _generate_summary(self, english_query: str, raw_data: List[Dict[str, Any]], feature_context: str, intent: str = "data_query", metrics: Dict[str, Any] = None, comparison_data: Dict[str, Any] = None) -> str:
-        """Generate summary using LLM with intent information and metrics"""
+    def _generate_summary(self, english_query: str, raw_data: List[Dict[str, Any]], feature_context: str, intent: str = "data_query", metrics: Dict[str, Any] = None, comparison_data: Dict[str, Any] = None, chart_request: Dict[str, Any] = None, time_context: Dict[str, Any] = None) -> str:
+        """Generate summary using LLM with intent information, metrics, comparison data, and chart info"""
         try:
             if hasattr(self.llm, 'openai_api_key') and self.llm.openai_api_key:
                 # Format metrics for LLM context
@@ -4184,18 +4550,24 @@ Always provide reasoning and confidence score."""
                         # Handle raw metrics (legacy)
                         metrics_text = f"\n## RAW METRICS:\n{json.dumps(metrics, indent=2)}"
                 
+                # Initialize variables
+                time_periods_text = ""
+                comparison_text = ""
+                trend_analysis = ""
+                
                 # For time-based queries, show the actual time periods and values
                 if raw_data and "avg_value" in raw_data[0]:
                     # This is aggregated data (time-aware query)
-                    time_periods_text = ""
                     is_comparison = any(word in english_query.lower() for word in ["مقایسه", "compare", "vs", "با", "versus"])
                     
                     # Check if this is time breakdown data
                     is_daily_breakdown = "day" in raw_data[0]
                     is_time_breakdown = "time_period" in raw_data[0]
                     
+                    # Start building time periods text with header
+                    time_periods_text = "\n📊 Sensor Data by Time Range:\n"
+                    
                     # Add comparison data if available
-                    comparison_text = ""
                     if comparison_data and comparison_data.get("sensor_comparisons"):
                         comparison_text = "\n## COMPARISON ANALYSIS:\n"
                         for sensor_type, comparison in comparison_data["sensor_comparisons"].items():
@@ -4203,7 +4575,6 @@ Always provide reasoning and confidence score."""
                                 comparison_text += f"- {sensor_type}: {comparison['delta']:.2f} change ({comparison['percent_change']:.1f}%)\n"
                     
                     # Calculate trend for time breakdown
-                    trend_analysis = ""
                     if (is_daily_breakdown or is_time_breakdown) and len(raw_data) > 1:
                         values = [item.get("avg_value", 0) for item in raw_data]
                         if len(values) >= 2:
@@ -4233,7 +4604,7 @@ Always provide reasoning and confidence score."""
                     
                     for i, item in enumerate(raw_data):
                         if is_daily_breakdown:
-                            # Daily breakdown format
+                            # Daily breakdown format with statistical data
                             day = item.get("day", f"Day {i+1}")
                             avg_value = item.get("avg_value", 0)
                             min_value = item.get("min_value", 0)
@@ -4241,9 +4612,9 @@ Always provide reasoning and confidence score."""
                             daily_range = item.get("daily_range", 0)
                             sensor_type = item.get("sensor_type", "sensor")
                             
-                            time_periods_text += f"- {day}: {avg_value:.2f} (Range: {min_value:.2f}-{max_value:.2f}, Daily Range: {daily_range:.2f})\n"
+                            time_periods_text += f"• {sensor_type.replace('_', ' ').title()}: Avg: {avg_value:.2f}, Min: {min_value:.2f}, Max: {max_value:.2f} ({day})\n"
                         elif is_time_breakdown:
-                            # Time period breakdown format (hourly, weekly, monthly)
+                            # Time period breakdown format (hourly, weekly, monthly) with statistical data
                             time_period = item.get("time_period", f"Period {i+1}")
                             avg_value = item.get("avg_value", 0)
                             min_value = item.get("min_value", 0)
@@ -4274,11 +4645,19 @@ Always provide reasoning and confidence score."""
                                 except:
                                     pass
                             
-                            time_periods_text += f"- {display_period}: {avg_value:.2f} (Range: {min_value:.2f}-{max_value:.2f}, Period Range: {period_range:.2f})\n"
+                            # Use exact time range from time_context if available
+                            if time_context:
+                                # Use the exact time range requested by user for ALL data points
+                                time_range_label = f"Last {time_context['value']} {time_context['unit']}"
+                            else:
+                                time_range_label = display_period
+                            time_periods_text += f"• {sensor_type.replace('_', ' ').title()}: Avg: {avg_value:.2f}, Min: {min_value:.2f}, Max: {max_value:.2f} ({time_range_label})\n"
                         else:
-                            # Regular time period format
+                            # Regular time period format with statistical data
                             time_period = item.get("time_period", f"Period {i+1}")
                             avg_value = item.get("avg_value", 0)
+                            min_value = item.get("min_value", 0)
+                            max_value = item.get("max_value", 0)
                             sensor_type = item.get("sensor_type", "sensor")
                             
                             if is_comparison and len(raw_data) == 2:
@@ -4287,64 +4666,84 @@ Always provide reasoning and confidence score."""
                                     period_label = "دیروز" if "دیروز" in english_query else "روز قبل"
                                 else:
                                     period_label = "امروز" if "امروز" in english_query else "روز فعلی"
-                                time_periods_text += f"- {period_label}: {avg_value:.2f} ({sensor_type})\n"
+                                time_periods_text += f"• {sensor_type.replace('_', ' ').title()}: Avg: {avg_value:.2f}, Min: {min_value:.2f}, Max: {max_value:.2f} ({period_label})\n"
                             else:
-                                time_periods_text += f"- {time_period}: {avg_value:.2f} ({sensor_type})\n"
+                                # Use exact time range from time_context if available
+                                if time_context:
+                                    # Use the exact time range requested by user for ALL data points
+                                    time_range_label = f"Last {time_context['value']} {time_context['unit']}"
+                                else:
+                                    time_range_label = time_period
+                                time_periods_text += f"• {sensor_type.replace('_', ' ').title()}: Avg: {avg_value:.2f}, Min: {min_value:.2f}, Max: {max_value:.2f} ({time_range_label})\n"
                     
-                context = f"""You are an AI assistant for a smart agriculture platform. 
-Always respond in this structured format with proper markdown formatting:
+                # Build chart information text
+                chart_info_text = ""
+                if chart_request and chart_request.get("wants_chart"):
+                    chart_info_text = f"""
+## CHART AVAILABLE:
+- Chart Type: {chart_request.get('chart_type', 'line')}
+- Chart Purpose: Visualize the data trend over time
+- Note: Mention that a visual chart is available to see the data graphically
+"""
+                
+                # Add time_context information if available
+                time_context_info = ""
+                if time_context:
+                    time_context_info = f"\n\nDetected Time Range: {time_context['value']} {time_context['unit']} (from {time_context['start_time']} to {time_context['end_time']})"
+                    # Add specific instruction for time range display
+                    time_context_info += f"\n\nCRITICAL INSTRUCTION: When displaying data, you MUST use the EXACT time range the user requested: '{time_context['value']} {time_context['unit']}'. DO NOT use generic labels like 'Last Hour', 'Last 6 Hours', 'Last 24 Hours', 'Last Week'. ONLY use the specific time range the user asked for."
+                
+                context = f"""You are a smart agriculture AI assistant. Provide concise, actionable responses.
 
-# Summary
-Brief one-sentence summary of the data
+RESPONSE FORMAT (KEEP IT SHORT):
+1. **Brief overview** - 1-2 sentences about what the data shows
+2. **Key data points** - Show the most important values  
+3. **Quick analysis** - 2-3 sentences about trends/patterns
+4. **Action items** - 2-3 specific recommendations
 
-## Key Metrics
-{time_periods_text}{comparison_text}{trend_analysis}
-## Analysis
-Brief analysis of the current situation (max 2 sentences)
+CRITICAL INSTRUCTIONS:
+- Keep response under 200 words total
+- Use EXACT time range from the data provided below
+- NEVER use generic labels like "Last Hour", "Last 6 Hours", "Last 24 Hours", "Last Week"
+- NEVER use Persian generic labels like "آخرین ساعت", "آخرین ۶ ساعت", "آخرین ۲۴ ساعت", "آخرین هفته"
+- ONLY use the EXACT time range shown in the data points below
+- Be specific and actionable
+- Focus on what matters most for farming decisions
+- If Persian query, respond in Persian; if English, respond in English
 
-## Recommendations
-1. First recommendation
-2. Second recommendation
+DATA TO USE (USE THE EXACT TIME LABELS FROM THIS DATA):
+{time_periods_text if time_periods_text else "No time period breakdown available"}
 
-CRITICAL INSTRUCTIONS FOR KEY METRICS:
-- If this is time breakdown data (daily, hourly, weekly, monthly), show a TREND SUMMARY instead of individual values
-- Format as: "📈 روند کلی: [trend description]"
-- Include: overall change, percentage change, and key insights
-- For time data, show: "📊 میانگین [period]: [average]", "📉 بیشترین تغییر: [biggest change]"
-- Use appropriate period names: "روزانه" (daily), "ساعتی" (hourly), "هفتگی" (weekly), "ماهانه" (monthly)
-- Use Persian for Persian queries, English for English queries
+ANALYSIS TO INCLUDE:
+{trend_analysis if trend_analysis else ""}
+{comparison_text if comparison_text else ""}
 
-Use proper markdown formatting with headers (#, ##), bullet points (-), and numbered lists (1., 2.). 
-Keep responses concise and clear. If user speaks Persian, reply in Persian.
+{chart_info_text}
+
+RESPONSE TEMPLATE:
+```
+📊 [Sensor Type] Data:
+• [Copy the EXACT time labels from the data above, don't create new ones]
+
+🔍 Analysis:
+• [Brief trend analysis]
+
+💡 Actions:
+• [2-3 specific recommendations]
+```
+
+CRITICAL WARNING: DO NOT generate your own time range labels! Use ONLY the exact labels provided in the DATA TO USE section above!
 
 Query: {english_query}
 Feature Context: {feature_context}
 Intent: {intent}
-Data Points: {len(raw_data)}
+Data Points: {len(raw_data)}{time_context_info}
 
-CRITICAL INSTRUCTIONS - READ CAREFULLY:
-1. You MUST use EXACTLY the time periods and values shown in the Key Metrics section above
-2. DO NOT calculate or use any other values (min, max, overall averages)
-3. Show each time period with its specific average value ONLY
-4. Format as: "Time Period: [actual value] [unit]"
-5. DO NOT use min_value, max_value, or any other calculated metrics
-6. IGNORE the raw data below - use only the Key Metrics section
-7. If comparison data is provided, explain the changes and trends clearly
+ACTUAL DATA FROM DATABASE (RAW):
+{json.dumps(raw_data[:10], indent=2)}
 
-Data: {json.dumps(raw_data[:5], indent=1)}
-
-EXAMPLE OF CORRECT FORMAT:
-If Key Metrics shows:
-- 2025-09-23: 15.80 (temperature)
-- 2025-09-24: 16.17 (temperature)
-- 2025-09-25: 16.61 (temperature)
-
-Then your response should show:
-- 2025-09-23: 15.80°C
-- 2025-09-24: 16.17°C  
-- 2025-09-25: 16.61°C
-
-Provide a structured response following the markdown format above."""
+Provide a natural, conversational response using the pre-formatted data sections above.
+"""
                 
                 # Log LLM call with truncated context
                 truncated_context = context[:200] + "..." if len(context) > 200 else context
@@ -4511,22 +4910,56 @@ Provide a structured response following the markdown format above."""
         try:
             # Prepare comprehensive context
             context = f"""
-You are an AI assistant for a smart agriculture platform. 
-Always respond in this structured format, and keep it very concise:
+You are an expert agricultural AI assistant. Provide concise, helpful responses.
 
-1. **Summary**: max 1 sentence  
-2. **Key Metrics**: top 3 relevant values only  
-3. **Analysis**: max 2 sentences  
-4. **Recommendations**: up to 2 short points  
+RESPONSE STRUCTURE:
+1. **Brief Summary** - 2 sentences maximum about the current situation
+2. **Clean Data Section** - Show the actual data in a readable format
 
-Do not include extra details. Prioritize brevity and clarity. 
-If user speaks Persian, reply in Persian.
+GUIDELINES:
+- Keep it short and to the point (2 sentences max)
+- Give quick insights about what the data shows
+- If user speaks Persian, reply in Persian; if English, reply in English
+- Use EXACT time range from the data provided below
+- NEVER use generic labels like "Last Hour", "Last 6 Hours", "Last 24 Hours", "Last Week"
+- NEVER use Persian generic labels like "آخرین ساعت", "آخرین ۶ ساعت", "آخرین ۲۴ ساعت", "آخرین هفته"
+
+FOR THE DATA SECTION, use this format:
+```
+📊 Sensor Data by Time Range:
+• Sensor Name: Avg: X.X, Min: X.X, Max: X.X (EXACT TIME RANGE FROM DATA)
+• Sensor Name: Avg: X.X, Min: X.X, Max: X.X (EXACT TIME RANGE FROM DATA)
+• Sensor Name: Avg: X.X, Min: X.X, Max: X.X (EXACT TIME RANGE FROM DATA)
+• Sensor Name: Avg: X.X, Min: X.X, Max: X.X (EXACT TIME RANGE FROM DATA)
+```
+
+CRITICAL INSTRUCTION: Copy the EXACT time labels from the data provided below. DO NOT create your own time range labels!
+
+FOR THE ANALYSIS SECTION, use this format:
+```
+🔍 Analysis:
+• Trend: [Describe the trend - increasing, decreasing, stable]
+• Pattern: [Identify any patterns in the data]
+• Significance: [What this means for the farm]
+• Alert Level: [Low/Medium/High based on the data]
+```
+
+FOR THE RECOMMENDATIONS SECTION, use this format:
+```
+💡 Recommendations:
+• Immediate Actions: [What to do right now]
+• Monitoring: [What to watch for]
+• Long-term: [Strategic advice for the future]
+• Resources: [Any tools or methods to use]
+```
+
+IMPORTANT: Use the actual data values provided below. Be specific and helpful.
 
 USER QUERY: {original_query}
 LIVE DATA: {json.dumps(live_data[:3], indent=1, ensure_ascii=False)}
 FEATURE: {feature_context}
 
-Provide a structured response in Persian following the format above.
+Provide an intelligent, helpful response with a clean data section using the actual values above.
 """
 
             # Log the context being sent to LLM
@@ -4717,23 +5150,23 @@ Provide a structured response in Persian following the format above.
                 alerts = alert_manager.get_user_alerts(session_id)
                 
                 if not alerts:
-                    response_text = "📋 You don't have any alerts set up yet.\n\n"
-                    response_text += "**Create your first alert:**\n"
-                    response_text += "- 'Alert me when temperature > 25°C'\n"
-                    response_text += "- 'Alert me when humidity < 40%'\n"
-                    response_text += "- 'Alert me when soil moisture > 60%'"
+                    response_text = "You don't have any alerts set up yet.\n\n"
+                    response_text += "Create your first alert:\n"
+                    response_text += "• 'Alert me when temperature > 25°C'\n"
+                    response_text += "• 'Alert me when humidity < 40%'\n"
+                    response_text += "• 'Alert me when soil moisture > 60%'"
                 else:
-                    response_text = f"📋 **Your Alerts ({len(alerts)} total):**\n\n"
+                    response_text = f"Your Alerts ({len(alerts)} total):\n\n"
                     
                     for i, alert in enumerate(alerts, 1):
                         status = "🟢 Active" if alert["is_active"] else "🔴 Inactive"
-                        response_text += f"{i}. **{alert['alert_name']}** {status}\n"
-                        response_text += f"   - {alert['sensor_type'].replace('_', ' ').title()} {alert['condition_type']} {alert['threshold_value']}\n"
-                        response_text += f"   - Created: {alert['created_at'][:10]}\n\n"
+                        response_text += f"{i}. {alert['alert_name']} {status}\n"
+                        response_text += f"   • {alert['sensor_type'].replace('_', ' ').title()} {alert['condition_type']} {alert['threshold_value']}\n"
+                        response_text += f"   • Created: {alert['created_at'][:10]}\n\n"
                     
-                    response_text += "**Commands:**\n"
-                    response_text += "- 'Delete [sensor] alert' to remove an alert\n"
-                    response_text += "- 'Alert me when...' to create new alerts"
+                    response_text += "Commands:\n"
+                    response_text += "• 'Delete [sensor] alert' to remove an alert\n"
+                    response_text += "• 'Alert me when...' to create new alerts"
                 
                 return {
                     "success": True,
@@ -4825,9 +5258,41 @@ Provide a structured response in Persian following the format above.
         persian_names = {
             "above": "بیشتر از",
             "below": "کمتر از",
-            "equals": "برابر با"
+            "equals": "برابر با",
+            "greater_equal": "بیشتر یا مساوی",
+            "less_equal": "کمتر یا مساوی"
         }
         return persian_names.get(condition, condition)
+    
+    def _get_persian_severity_name(self, severity: str) -> str:
+        """Get Persian name for severity level"""
+        severity_map = {
+            "info": "اطلاعی",
+            "warning": "هشدار", 
+            "critical": "بحرانی"
+        }
+        return severity_map.get(severity, severity)
+    
+    def _detect_enhanced_alert_intent(self, query: str, detected_lang: str) -> str:
+        """Detect enhanced alert intent with ontology support"""
+        query_lower = query.lower()
+        
+        # Enhanced create commands with severity and action support
+        create_commands = [
+            "create", "alert me", "set alert", "add alert", "make alert", "new alert",
+            "send an alert", "send alert", "notify me", "notify", "warn me", "warn",
+            "critical alert", "urgent alert", "emergency alert", "بحرانی", "فوری",
+            "auto alert", "automatic alert", "خودکار", "اتوماتیک"
+        ]
+        
+        if any(cmd in query_lower for cmd in create_commands):
+            return "create"
+        elif any(cmd in query_lower for cmd in ["show", "list", "my alerts", "alerts"]):
+            return "list"
+        elif any(cmd in query_lower for cmd in ["delete", "remove", "cancel"]):
+            return "delete"
+        else:
+            return "unknown"
 
     def get_health_status(self) -> Dict[str, Any]:
         """Get health status of the service"""

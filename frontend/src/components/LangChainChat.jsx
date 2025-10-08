@@ -303,8 +303,8 @@ const FormattedMessage = ({ content, chart, chartType, sidebarWidth = 320 }) => 
       <div 
         className="bg-white rounded-lg border border-gray-100 shadow-inner overflow-hidden"
         style={{ 
-          height: `${Math.max(384, Math.min(512, sidebarWidth * 0.8))}px`,
-          width: `${Math.max(280, sidebarWidth - 40)}px`
+          height: `${Math.max(500, Math.min(700, sidebarWidth * 1.2))}px`,
+          width: `${Math.max(350, sidebarWidth - 20)}px`
         }}
       >
         <div className="w-full h-full">
@@ -347,7 +347,7 @@ const FormattedMessage = ({ content, chart, chartType, sidebarWidth = 320 }) => 
             return (
               <div key={index} className="flex items-start space-x-2 space-x-reverse mr-4">
                 <span className="text-gray-500 text-lg font-bold flex-shrink-0" style={{ lineHeight: '1.25rem' }}>•</span>
-                <span className="text-sm leading-relaxed">{item.content}</span>
+                <span className="text-base leading-relaxed">{item.content}</span>
               </div>
             )
           
@@ -355,7 +355,7 @@ const FormattedMessage = ({ content, chart, chartType, sidebarWidth = 320 }) => 
             return (
               <div key={index} className="flex items-start space-x-2 space-x-reverse mr-4">
                 <span className="text-gray-500 mt-1 text-sm font-medium">{index + 1}.</span>
-                <span className="text-sm">{item.content}</span>
+                <span className="text-base">{item.content}</span>
               </div>
             )
           
@@ -365,7 +365,7 @@ const FormattedMessage = ({ content, chart, chartType, sidebarWidth = 320 }) => 
             return (
               <div 
                 key={index} 
-                className="text-sm font-semibold"
+                className="text-base font-semibold"
                 dangerouslySetInnerHTML={{ __html: boldText }}
               />
             )
@@ -377,13 +377,69 @@ const FormattedMessage = ({ content, chart, chartType, sidebarWidth = 320 }) => 
               </div>
             )
           
+          case 'table':
+            return (
+              <div key={index} className="overflow-x-auto my-4">
+                <table className="min-w-full bg-white border border-gray-200 rounded-lg shadow-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      {item.headers?.map((header, headerIndex) => (
+                        <th key={headerIndex} className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                          {header}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {item.rows?.map((row, rowIndex) => (
+                      <tr key={rowIndex} className={rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                        {row.map((cell, cellIndex) => (
+                          <td key={cellIndex} className="px-4 py-3 text-sm text-gray-900 border-b border-gray-100">
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          
+          case 'sensor_table':
+            return (
+              <div key={index} className="overflow-x-auto my-4">
+                <table className="min-w-full bg-white border border-gray-300 rounded-lg shadow-sm">
+                  <thead className="bg-gray-200">
+                    <tr>
+                      {item.headers?.map((header, headerIndex) => (
+                        <th key={headerIndex} className="px-4 py-3 text-left text-sm font-medium text-gray-600 uppercase tracking-wider border-b border-gray-300">
+                          {header}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-300">
+                    {item.rows?.map((row, rowIndex) => (
+                      <tr key={rowIndex} className={rowIndex % 2 === 0 ? 'bg-gray-50' : 'bg-gray-100'}>
+                        {row.map((cell, cellIndex) => (
+                          <td key={cellIndex} className="px-4 py-3 text-sm text-gray-800 border-b border-gray-200">
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          
           case 'empty':
             return <div key={index} className="h-2" />
           
           case 'text':
           default:
             return (
-              <div key={index} className="text-sm leading-relaxed">
+              <div key={index} className="text-base leading-relaxed">
                 {item.content}
               </div>
             )
@@ -440,6 +496,16 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
     console.log('🔄 EFFECT DEBUG: useEffect for loading data triggered')
     loadAIAssistantData()
     loadSemanticData()
+  }, [])
+
+  // Listen for new chat event from Dashboard
+  useEffect(() => {
+    const handleNewChatEvent = () => {
+      handleNewChat()
+    }
+    
+    window.addEventListener('newChat', handleNewChatEvent)
+    return () => window.removeEventListener('newChat', handleNewChatEvent)
   }, [])
 
   // Load feature-specific data when currentFeature changes
@@ -499,6 +565,28 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
     }
   }
 
+  // Helper function to detect and format sensor data as tables
+  const detectSensorData = (content) => {
+    // Look for patterns like "Sensor Name: Avg: X.X, Min: X.X, Max: X.X"
+    const sensorDataPattern = /•\s*([^:]+):\s*Avg:\s*([0-9.-]+),\s*Min:\s*([0-9.-]+),\s*Max:\s*([0-9.-]+)(?:\s*\(([^)]+)\))?/g
+    const matches = [...content.matchAll(sensorDataPattern)]
+    
+    if (matches.length > 0) {
+      const headers = ['Sensor', 'Average', 'Minimum', 'Maximum', 'Time Period']
+      const rows = matches.map(match => [
+        match[1].trim(),
+        parseFloat(match[2]).toFixed(2),
+        parseFloat(match[3]).toFixed(2),
+        parseFloat(match[4]).toFixed(2),
+        match[5] || 'N/A'
+      ])
+      
+      return { headers, rows }
+    }
+    
+    return null
+  }
+
   // Format text with bullet points, numbered lists, and better readability
   const formatMessageContent = (content) => {
     if (!content) return content
@@ -526,7 +614,41 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
       // Check for bullet points (-, *, •)
       if (line.match(/^[-*•]\s+/)) {
         const text = line.replace(/^[-*•]\s+/, '')
-        formattedLines.push({ type: 'bullet', content: text })
+        
+        // Check if this is sensor data that should be converted to table
+        const sensorDataPattern = /^([^:]+):\s*Avg:\s*([0-9.-]+),\s*Min:\s*([0-9.-]+),\s*Max:\s*([0-9.-]+)(?:\s*\(([^)]+)\))?$/
+        const sensorMatch = text.match(sensorDataPattern)
+        
+        if (sensorMatch) {
+          // Check if we already have a sensor data table started
+          const lastItem = formattedLines[formattedLines.length - 1]
+          if (lastItem && lastItem.type === 'sensor_table') {
+            // Add row to existing table
+            lastItem.rows.push([
+              sensorMatch[1].trim(),
+              parseFloat(sensorMatch[2]).toFixed(2),
+              parseFloat(sensorMatch[3]).toFixed(2),
+              parseFloat(sensorMatch[4]).toFixed(2),
+              sensorMatch[5] || 'N/A'
+            ])
+          } else {
+            // Start new sensor data table
+            formattedLines.push({
+              type: 'sensor_table',
+              headers: ['حسگر', 'میانگین', 'حداقل', 'حداکثر', 'دوره زمانی'],
+              rows: [[
+                sensorMatch[1].trim(),
+                parseFloat(sensorMatch[2]).toFixed(2),
+                parseFloat(sensorMatch[3]).toFixed(2),
+                parseFloat(sensorMatch[4]).toFixed(2),
+                sensorMatch[5] || 'N/A'
+              ]]
+            })
+          }
+        } else {
+          // Regular bullet point
+          formattedLines.push({ type: 'bullet', content: text })
+        }
         continue
       }
       
@@ -546,6 +668,35 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
       // Check for code blocks (```code```)
       if (line.startsWith('```')) {
         formattedLines.push({ type: 'code-start', content: line })
+        continue
+      }
+      
+      // Check for table data (lines with multiple | separators)
+      if (line.includes('|') && line.split('|').length > 2) {
+        // Check if this is a table header or separator line
+        if (line.includes('---') || line.includes('===')) {
+          // Skip separator lines
+          continue
+        }
+        
+        // Parse table row
+        const cells = line.split('|').map(cell => cell.trim()).filter(cell => cell !== '')
+        
+        // Check if this is the first table row (header)
+        if (formattedLines.length === 0 || formattedLines[formattedLines.length - 1].type !== 'table') {
+          // Start new table
+          formattedLines.push({ 
+            type: 'table', 
+            headers: cells,
+            rows: []
+          })
+        } else {
+          // Add row to existing table
+          const lastTable = formattedLines[formattedLines.length - 1]
+          if (lastTable.type === 'table') {
+            lastTable.rows.push(cells)
+          }
+        }
         continue
       }
       
@@ -823,10 +974,30 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
       })
       
         console.log('💬 DEBUG: Chat response:', response.data)
-        if (typeof response.data.output === 'object') {
-          responseText = JSON.stringify(response.data.output, null, 2)
+        // For chat mode, always show normal text, not JSON
+        if (response.data.output) {
+          // If output is an object, extract the text content
+          if (typeof response.data.output === 'object') {
+            // Try to get the main text content from the object
+            let mainText = response.data.output.summary || 
+                          response.data.output.response || 
+                          response.data.output.answer || 
+                          response.data.output.message
+            
+            // If we have recommendations, append them to the main text
+            if (response.data.output.recommendations && Array.isArray(response.data.output.recommendations)) {
+              const recommendations = response.data.output.recommendations
+                .map((rec, index) => `${index + 1}. ${rec}`)
+                .join('\n')
+              mainText = mainText + '\n\nتوصیه‌ها:\n' + recommendations
+            }
+            
+            responseText = mainText || JSON.stringify(response.data.output, null, 2)
+          } else {
+            responseText = response.data.output
+          }
         } else {
-          responseText = response.data.output || response.data.answer || 'پاسخ دریافت نشد'
+          responseText = response.data.answer || 'پاسخ دریافت نشد'
         }
       }
       
@@ -872,19 +1043,86 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
     }, 100)
   }
 
-  const quickQuestions = [
-    "میانگین دما چقدر است؟",
-    "روند رطوبت چگونه است؟",
-    "بالاترین فشار ثبت شده چقدر است؟",
-    "آمار کلی سنسورها را نشان دهید"
-  ]
+  const handleNewChat = () => {
+    setMessages([])
+    setInputMessage('')
+  }
 
-  const semanticQuickQuestions = [
-    "When was the last irrigation?",
-    "What is the current humidity?",
-    "What pests have been detected today?",
-    "Show me irrigation events from last week"
-  ]
+  // Single input component that can be positioned at top or bottom
+  const renderInput = (isCentered = false) => {
+    return (
+      <div className={`relative ${isCentered ? 'w-full' : ''}`} style={{ maxWidth: isCentered ? `${Math.max(280, sidebarWidth - 40)}px` : `${Math.max(280, sidebarWidth - 40)}px` }}>
+        <div className="relative bg-white border border-gray-300 rounded-xl shadow-sm focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100 transition-all duration-200">
+          {/* Placeholder at top-right */}
+          <div className="absolute top-3 right-4 text-xs text-gray-400 pointer-events-none">
+            Just ask something...
+          </div>
+          
+          {/* Input Field */}
+          <input
+            type="text"
+            value={inputMessage}
+            onChange={(e) => setInputMessage(e.target.value)}
+            onKeyPress={handleKeyPress}
+            placeholder=""
+            className="w-full px-4 py-8 pr-16 pl-4 bg-transparent border-0 rounded-xl focus:outline-none text-sm pt-10"
+            dir="rtl"
+            disabled={isLoading}
+          />
+          
+          {/* Send Button (Absolute bottom) */}
+          <button
+            onClick={sendMessage}
+            disabled={!inputMessage.trim() || isLoading}
+            className="absolute bottom-2 right-2 w-8 h-8 bg-gray-800 text-white rounded-full hover:bg-gray-900 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 flex items-center justify-center border border-gray-300 shadow-sm"
+          >
+            {isLoading ? (
+              <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
+            ) : (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 19V5m0 0l-7 7m7-7l7 7" />
+              </svg>
+            )}
+          </button>
+          
+          {/* Tab Buttons (Bottom left) */}
+          <div className="absolute bottom-2 left-2 flex space-x-1">
+            <button
+              onClick={() => setActiveTab('data')}
+              className={`px-2 py-1 text-xs rounded-md transition-colors duration-200 ${
+                activeTab === 'data'
+                  ? 'bg-gray-200 text-gray-800 font-medium' 
+                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              Agent
+            </button>
+            <button
+              onClick={() => setActiveTab('chat')}
+              className={`px-2 py-1 text-xs rounded-md transition-colors duration-200 ${
+                activeTab === 'chat'
+                  ? 'bg-gray-200 text-gray-800 font-medium' 
+                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              Chat
+            </button>
+          </div>
+        </div>
+        
+        {/* Tab Description */}
+        <div className="text-center mt-2">
+          <p className="text-xs text-gray-500">
+            {activeTab === 'data' 
+              ? '📊 Data Query - Real sensor data'
+              : '💬 Chat - General conversation'
+            }
+          </p>
+        </div>
+      </div>
+    )
+  }
+
 
 
 
@@ -902,32 +1140,9 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
     return featureMap[currentFeature] || 'dashboard'
   }
 
-  const getModeTitle = () => {
-    return 'Smart AI Assistant' // Updated to reflect intent routing
-  }
-
-  const getPlaceholder = () => {
-    if (activeTab === 'data') {
-      return "سوال خود را بنویسید... (داده‌های سنسور، آبیاری، آفات) - Data Query Mode"
-    } else {
-      return "سوال خود را بنویسید... (گفتگو، راهنمایی، توضیحات) - Chat Mode"
-    }
-  }
-
-  const getQuickQuestions = () => {
-    return [
-      "امروز میشه سم پاشی کرد یا نه؟",
-      "خاک چطوره؟ باید کود بدیم؟", 
-      "وضعیت آفات و بیماری‌ها چطوره؟",
-      "Should I water the plants today?",
-      "What is the current soil moisture?",
-      "Can we spray pesticides now?"
-    ]
-  }
 
   return (
     <div className="flex flex-col h-full" style={{ width: `${sidebarWidth}px` }}>
-      
       
       {/* Mode Toggle - Hidden since we only use Semantic Layer */}
       {/* <div className="px-4 pb-2 pt-2">
@@ -983,15 +1198,16 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
           </div>
         )} */}
 
+
       {/* Messages Container */}
-      <div className={`flex-1 space-y-4 overflow-y-auto ${messages.length > 0 ? 'px-4 py-4' : 'px-4'}`} style={{ width: `${sidebarWidth}px` }}>
+      <div className={`flex-1 space-y-4 overflow-y-auto ${messages.length > 0 ? 'pl-4 pr-2 py-4' : 'pl-4 pr-2'}`} style={{ width: `${sidebarWidth}px` }}>
         {messages.map((message) => (
           <div
             key={message.id}
             className={`flex ${message.type === 'user' ? 'justify-start' : 'justify-end'}`}
           >
             <div
-              className={`${message.type === 'user' ? 'max-w-xs' : 'max-w-lg'} px-3 py-2 rounded-2xl text-sm ${
+              className={`${message.type === 'user' ? 'max-w-xs' : 'max-w-lg'} px-3 py-2 rounded-2xl text-base ${
                 message.type === 'user'
                   ? 'bg-transparent text-gray-800 border border-gray-200 rounded-bl-lg'
                   : 'bg-transparent text-gray-800 rounded-br-lg'
@@ -1060,192 +1276,26 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
 
         <div ref={messagesEndRef} />
 
-        {/* Welcome State - Centered Input */}
+        {/* Welcome State - Centered input when no messages */}
         {messages.length === 0 && (
-          <div className="flex-1 flex items-center justify-center px-4" style={{ width: `${sidebarWidth}px` }}>
-            <div className="w-full" style={{ maxWidth: `${Math.max(280, sidebarWidth - 40)}px` }}>
-              <div className="text-center mb-4">
-                <h2 className="text-lg font-bold text-gray-800 mb-2">
-                  {activeTab === 'data' ? '📊 Data Query Assistant' : '💬 Chat Assistant'}
-                </h2>
-                <p className="text-sm text-gray-600">
-                  {activeTab === 'data' 
-                    ? 'Ask about sensor data, irrigation, pests, environment - gets real database information'
-                    : 'General conversation about agriculture, farming tips, explanations - pure AI chat'
-                  }
-                </p>
-                <p className="text-xs text-gray-500 mt-1">
-                  Session: {sessionId.substring(0, 20)}...
-                </p>
-              </div>
-              <div className="relative">
-                {/* Main Input Container */}
-                <div className="relative bg-white border border-gray-300 rounded-xl shadow-sm focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100 transition-all duration-200" style={{ width: `${Math.max(280, sidebarWidth - 40)}px` }}>
-                  {/* Placeholder at top-right */}
-                  <div className="absolute top-3 right-4 text-xs text-gray-400 pointer-events-none">
-                    Just ask something...
-                  </div>
-                  
-                  {/* Input Field */}
-                <input
-                  type="text"
-                  value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  onKeyPress={handleKeyPress}
-                    placeholder=""
-                    className="w-full px-4 py-8 pr-16 pl-4 bg-transparent border-0 rounded-xl focus:outline-none text-sm pt-10"
-                  dir="rtl"
-                  disabled={isLoading}
-                />
-                  
-                  {/* Send Button (Absolute bottom) */}
-                <button
-                  onClick={sendMessage}
-                  disabled={!inputMessage.trim() || isLoading}
-                    className="absolute bottom-2 right-2 w-8 h-8 bg-black text-white rounded-full hover:bg-gray-900 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 flex items-center justify-center"
-                >
-                  {isLoading ? (
-                      <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
-                  ) : (
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                    </svg>
-                  )}
-                </button>
-                  
-                  {/* Tab Buttons (Bottom left) */}
-                  <div className="absolute bottom-2 left-2 flex space-x-1">
-                    <button
-                      onClick={() => setActiveTab('data')}
-                      className={`px-2 py-1 text-xs rounded-md transition-colors duration-200 ${
-                        activeTab === 'data'
-                          ? 'bg-gray-200 text-gray-800 font-medium' 
-                          : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
-                      }`}
-                    >
-                      Agent
-                    </button>
-                    <button
-                      onClick={() => setActiveTab('chat')}
-                      className={`px-2 py-1 text-xs rounded-md transition-colors duration-200 ${
-                        activeTab === 'chat'
-                          ? 'bg-gray-200 text-gray-800 font-medium' 
-                          : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
-                      }`}
-                    >
-                      Chat
-                </button>
-                  </div>
-                </div>
-                
-                {/* Tab Description */}
-                <div className="text-center mt-2">
-                  <p className="text-xs text-gray-500">
-                    {activeTab === 'data' 
-                      ? '📊 Data Query - Gets real sensor data from database'
-                      : '💬 Chat - General conversation about agriculture'
-                    }
-                  </p>
-              </div>
-              </div>
+          <div className="flex-1 flex flex-col items-center justify-center pl-4 pr-2" style={{ width: `${sidebarWidth}px` }}>
+            <div className="text-center mb-6">
+              <p className="text-sm text-gray-500">
+                Start a conversation...
+              </p>
             </div>
+            {renderInput(true)}
           </div>
         )}
       </div>
 
-      {/* Quick Questions */}
-      {messages.length === 0 && (
-        <div className="px-4 pb-2">
-          <p className="text-xs text-gray-600 mb-2 text-center">
-            Sample Queries:
-          </p>
-          <div className="flex flex-wrap gap-1 justify-center">
-            {getQuickQuestions().slice(0, 3).map((question, index) => (
-              <button
-                key={index}
-                onClick={() => handleQuickQuestion(question)}
-                className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-full transition-colors duration-200"
-              >
-                {question}
-              </button>
-            ))}
-          </div>
+
+      {/* Fixed Bottom Input Area - Only show when there are messages */}
+      {messages.length > 0 && (
+        <div className="border-t border-gray-200 pl-4 pr-2 py-3 bg-gray-50" style={{ width: `${sidebarWidth}px` }}>
+          {renderInput(false)}
         </div>
       )}
-
-      {/* Fixed Bottom Input Area */}
-      <div className="border-t border-gray-200 px-4 py-3 bg-gray-50" style={{ width: `${sidebarWidth}px` }}>
-        <div className="relative">
-          {/* Main Input Container */}
-          <div className="relative bg-white border border-gray-300 rounded-xl shadow-sm focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100 transition-all duration-200" style={{ width: `${Math.max(280, sidebarWidth - 40)}px` }}>
-            {/* Placeholder at top-right */}
-            <div className="absolute top-3 right-4 text-xs text-gray-400 pointer-events-none">
-              Just ask something...
-            </div>
-            
-            {/* Input Field */}
-                <input
-                  type="text"
-                  value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  onKeyPress={handleKeyPress}
-              placeholder=""
-              className="w-full px-4 py-8 pr-16 pl-4 bg-transparent border-0 rounded-xl focus:outline-none text-sm pt-10"
-                  dir="rtl"
-                  disabled={isLoading}
-                />
-            
-            {/* Send Button (Absolute bottom) */}
-                <button
-                  onClick={sendMessage}
-                  disabled={!inputMessage.trim() || isLoading}
-              className="absolute bottom-2 right-2 w-8 h-8 bg-black text-white rounded-full hover:bg-gray-900 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 flex items-center justify-center"
-                >
-                  {isLoading ? (
-                <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
-                  ) : (
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
-                    </svg>
-                  )}
-                </button>
-            
-            {/* Tab Buttons (Bottom left) */}
-            <div className="absolute bottom-2 left-2 flex space-x-1">
-              <button
-                onClick={() => setActiveTab('data')}
-                className={`px-2 py-1 text-xs rounded-md transition-colors duration-200 ${
-                  activeTab === 'data'
-                    ? 'bg-gray-200 text-gray-800 font-medium' 
-                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
-                }`}
-              >
-                Agent
-              </button>
-              <button
-                onClick={() => setActiveTab('chat')}
-                className={`px-2 py-1 text-xs rounded-md transition-colors duration-200 ${
-                  activeTab === 'chat'
-                    ? 'bg-gray-200 text-gray-800 font-medium' 
-                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
-                }`}
-              >
-                Chat
-                </button>
-            </div>
-          </div>
-          
-          {/* Tab Description */}
-          <div className="text-center mt-2">
-            <p className="text-xs text-gray-500">
-              {activeTab === 'data' 
-                ? '📊 Data Query - Gets real sensor data from database'
-                : '💬 Chat - General conversation about agriculture'
-              }
-            </p>
-          </div>
-        </div>
-      </div>
     </div>
   )
 }

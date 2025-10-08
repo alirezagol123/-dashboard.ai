@@ -1486,12 +1486,30 @@ const Dashboard = () => {
                   </span>
                 )}
               </div>
-              <button
-                onClick={() => setAiSidebarOpen(false)}
-                className="p-2 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
-              >
-                <X className="h-5 w-5" />
-              </button>
+              <div className="flex items-center space-x-2">
+                {/* New Chat Button - Plus icon */}
+                <button
+                  onClick={() => {
+                    // Trigger new chat in LangChainChat component
+                    const event = new CustomEvent('newChat');
+                    window.dispatchEvent(event);
+                  }}
+                  className="p-2 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+                  title="New Chat"
+                >
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                  </svg>
+                </button>
+                
+                {/* Close Button */}
+                <button
+                  onClick={() => setAiSidebarOpen(false)}
+                  className="p-2 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
             </div>
             
             <div className="h-[calc(100vh-3rem)] overflow-hidden" style={{ width: `${sidebarWidth}px` }}>

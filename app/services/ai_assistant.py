@@ -276,9 +276,18 @@ RESPONSE (JSON only):"""
             
             # Parse JSON response
             try:
-                parsed_response = json.loads(response_text)
+                # Clean up markdown code blocks if present
+                cleaned_text = response_text
+                if cleaned_text.startswith('```json'):
+                    cleaned_text = cleaned_text[7:]  # Remove ```json
+                if cleaned_text.endswith('```'):
+                    cleaned_text = cleaned_text[:-3]  # Remove ```
+                cleaned_text = cleaned_text.strip()
+                
+                parsed_response = json.loads(cleaned_text)
                 return parsed_response
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON parsing failed: {e}, response_text: {response_text[:200]}...")
                 # Fallback if JSON parsing fails
                 return {
                     "summary": response_text,

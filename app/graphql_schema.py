@@ -1,12 +1,13 @@
 """
 GraphQL Schema for Agriculture Semantic Layer
-Provides GraphQL API for IrrigationEvent, EnvironmentControl, and PestDetection entities
+Updated to match actual database structure with sensor_data table
 """
 
 from graphene import ObjectType, String, Int, Float, Boolean, List, Field, Schema, DateTime
 from graphene.types import Scalar
 from typing import Dict, Any
 import json
+import sqlite3
 from datetime import datetime
 
 # Custom DateTime scalar
@@ -23,32 +24,45 @@ class DateTime(Scalar):
     def parse_value(value):
         return datetime.fromisoformat(value)
 
-# GraphQL Types
-class IrrigationEventType(ObjectType):
-    event_id = String()
+# GraphQL Types - Updated to match actual database structure
+class SensorDataType(ObjectType):
+    id = Int()
     timestamp = DateTime()
-    water_amount_liters = Float()
-    irrigation_method = String()
-    irrigation_duration_minutes = Int()
-    status = String()
+    sensor_type = String()
+    value = Float()
+    unit = String()
+    source = String()
+    raw_json = String()
 
-class EnvironmentControlType(ObjectType):
-    control_id = String()
+class SessionStorageType(ObjectType):
+    id = Int()
+    session_id = String()
+    query = String()
+    response = String()
+    sql_query = String()
+    semantic_json = String()
     timestamp = DateTime()
-    temperature_celsius = Float()
-    humidity_percent = Float()
-    co2_ppm = Int()
-    light_lux = Int()
-    fan_status = Boolean()
-    heater_status = Boolean()
+    created_at = DateTime()
+    metrics = String()
+    chart_data = String()
 
-class PestDetectionType(ObjectType):
-    detection_id = String()
-    timestamp = DateTime()
-    pest_or_disease_type = String()
-    severity_level = String()
-    detected_by = String()
-    recommended_action = String()
+class UserAlertType(ObjectType):
+    id = Int()
+    user_id = String()
+    alert_name = String()
+    sensor_type = String()
+    condition_type = String()
+    threshold_value = Float()
+    is_active = Boolean()
+    created_at = DateTime()
+    updated_at = DateTime()
+
+class SessionMetadataType(ObjectType):
+    id = Int()
+    session_id = String()
+    created_at = DateTime()
+    last_activity = DateTime()
+    is_active = Boolean()
 
 # Additional GraphQL Types for Complete Ontology Coverage
 class SoilSensorType(ObjectType):
@@ -104,23 +118,32 @@ class AnalyticsType(ObjectType):
     leaf_wetness_percent = Float()
     test_temperature_celsius = Float()
 
-# Query Type
+# Database connection helper
+def get_db_connection():
+    return sqlite3.connect('smart_dashboard.db')
+
+# Query Type - Updated to match actual database
 class Query(ObjectType):
-    # Irrigation Events Queries
-    irrigation_events = List(IrrigationEventType, limit=Int(), offset=Int())
-    latest_irrigation_event = Field(IrrigationEventType)
-    irrigation_events_today = List(IrrigationEventType)
-    
-    # Environment Controls Queries
-    environment_controls = List(EnvironmentControlType, limit=Int(), offset=Int())
-    latest_environment_control = Field(EnvironmentControlType)
-    current_humidity = Float()
+    # Sensor Data Queries
+    sensor_data = List(SensorDataType, limit=Int(), offset=Int(), sensor_type=String())
+    latest_sensor_data = Field(SensorDataType, sensor_type=String())
+    sensor_data_by_type = List(SensorDataType, sensor_type=String(), limit=Int())
     current_temperature = Float()
+    current_humidity = Float()
+    current_energy_usage = Float()
+    current_yield_efficiency = Float()
     
-    # Pest Detection Queries
-    pest_detections = List(PestDetectionType, limit=Int(), offset=Int())
-    pest_detections_today = List(PestDetectionType)
-    high_severity_pest_detections = List(PestDetectionType)
+    # Session Storage Queries
+    session_storage = List(SessionStorageType, limit=Int(), offset=Int(), session_id=String())
+    latest_session_storage = Field(SessionStorageType, session_id=String())
+    
+    # User Alerts Queries
+    user_alerts = List(UserAlertType, limit=Int(), offset=Int(), user_id=String())
+    active_alerts = List(UserAlertType, user_id=String())
+    
+    # Session Metadata Queries
+    session_metadata = List(SessionMetadataType, limit=Int(), offset=Int())
+    active_sessions = List(SessionMetadataType)
     
     # Cross-entity queries
     farm_status = Field('FarmStatusType')
@@ -178,38 +201,298 @@ class Query(ObjectType):
     current_leaf_wetness = Float()
     current_test_temperature = Float()
     
-    def resolve_irrigation_events(self, info, limit=10, offset=0):
-        """Get irrigation events with pagination"""
-        # Mock data - replace with actual database query
+    def resolve_sensor_data(self, info, limit=10, offset=0, sensor_type=None):
+        """Get sensor data with pagination and optional filtering"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if sensor_type:
+            cursor.execute("""
+                SELECT id, timestamp, sensor_type, value, unit, source, raw_json 
+                FROM sensor_data 
+                WHERE sensor_type = ? 
+                ORDER BY timestamp DESC 
+                LIMIT ? OFFSET ?
+            """, (sensor_type, limit, offset))
+        else:
+            cursor.execute("""
+                SELECT id, timestamp, sensor_type, value, unit, source, raw_json 
+                FROM sensor_data 
+                ORDER BY timestamp DESC 
+                LIMIT ? OFFSET ?
+            """, (limit, offset))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
         return [
-            IrrigationEventType(
-                event_id="irr_1",
-                timestamp=datetime.now(),
-                water_amount_liters=25.5,
-                irrigation_method="drip",
-                irrigation_duration_minutes=30,
-                status="completed"
-            ),
-            IrrigationEventType(
-                event_id="irr_2",
-                timestamp=datetime.now(),
-                water_amount_liters=15.0,
-                irrigation_method="sprinkler",
-                irrigation_duration_minutes=20,
-                status="completed"
-            )
-        ][offset:offset + limit]
+            SensorDataType(
+                id=row[0],
+                timestamp=datetime.fromisoformat(row[1]) if row[1] else None,
+                sensor_type=row[2],
+                value=row[3],
+                unit=row[4],
+                source=row[5],
+                raw_json=row[6]
+            ) for row in rows
+        ]
     
-    def resolve_latest_irrigation_event(self, info):
-        """Get the latest irrigation event"""
-        return IrrigationEventType(
-            event_id="irr_latest",
-            timestamp=datetime.now(),
-            water_amount_liters=25.5,
-            irrigation_method="drip",
-            irrigation_duration_minutes=30,
-            status="completed"
-        )
+    def resolve_latest_sensor_data(self, info, sensor_type=None):
+        """Get the latest sensor data"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if sensor_type:
+            cursor.execute("""
+                SELECT id, timestamp, sensor_type, value, unit, source, raw_json 
+                FROM sensor_data 
+                WHERE sensor_type = ? 
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            """, (sensor_type,))
+        else:
+            cursor.execute("""
+                SELECT id, timestamp, sensor_type, value, unit, source, raw_json 
+                FROM sensor_data 
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            """)
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return SensorDataType(
+                id=row[0],
+                timestamp=datetime.fromisoformat(row[1]) if row[1] else None,
+                sensor_type=row[2],
+                value=row[3],
+                unit=row[4],
+                source=row[5],
+                raw_json=row[6]
+            )
+        return None
+    
+    def resolve_sensor_data_by_type(self, info, sensor_type, limit=10):
+        """Get sensor data filtered by type"""
+        return self.resolve_sensor_data(info, limit=limit, sensor_type=sensor_type)
+    
+    def resolve_current_temperature(self, info):
+        """Get current temperature from sensor data"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT value FROM sensor_data 
+            WHERE sensor_type = 'temperature' 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        """)
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+    
+    def resolve_current_humidity(self, info):
+        """Get current humidity from sensor data"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT value FROM sensor_data 
+            WHERE sensor_type = 'humidity' 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        """)
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+    
+    def resolve_current_energy_usage(self, info):
+        """Get current energy usage from sensor data"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT value FROM sensor_data 
+            WHERE sensor_type = 'energy_usage' 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        """)
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+    
+    def resolve_current_yield_efficiency(self, info):
+        """Get current yield efficiency from sensor data"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT value FROM sensor_data 
+            WHERE sensor_type = 'yield_efficiency' 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        """)
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+    
+    def resolve_session_storage(self, info, limit=10, offset=0, session_id=None):
+        """Get session storage data with pagination and optional filtering"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if session_id:
+            cursor.execute("""
+                SELECT id, session_id, query, response, sql_query, semantic_json, 
+                       timestamp, created_at, metrics, chart_data 
+                FROM session_storage 
+                WHERE session_id = ? 
+                ORDER BY timestamp DESC 
+                LIMIT ? OFFSET ?
+            """, (session_id, limit, offset))
+        else:
+            cursor.execute("""
+                SELECT id, session_id, query, response, sql_query, semantic_json, 
+                       timestamp, created_at, metrics, chart_data 
+                FROM session_storage 
+                ORDER BY timestamp DESC 
+                LIMIT ? OFFSET ?
+            """, (limit, offset))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [
+            SessionStorageType(
+                id=row[0],
+                session_id=row[1],
+                query=row[2],
+                response=row[3],
+                sql_query=row[4],
+                semantic_json=row[5],
+                timestamp=datetime.fromisoformat(row[6]) if row[6] else None,
+                created_at=datetime.fromisoformat(row[7]) if row[7] else None,
+                metrics=row[8],
+                chart_data=row[9]
+            ) for row in rows
+        ]
+    
+    def resolve_latest_session_storage(self, info, session_id=None):
+        """Get the latest session storage data"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if session_id:
+            cursor.execute("""
+                SELECT id, session_id, query, response, sql_query, semantic_json, 
+                       timestamp, created_at, metrics, chart_data 
+                FROM session_storage 
+                WHERE session_id = ? 
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            """, (session_id,))
+        else:
+            cursor.execute("""
+                SELECT id, session_id, query, response, sql_query, semantic_json, 
+                       timestamp, created_at, metrics, chart_data 
+                FROM session_storage 
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            """)
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return SessionStorageType(
+                id=row[0],
+                session_id=row[1],
+                query=row[2],
+                response=row[3],
+                sql_query=row[4],
+                semantic_json=row[5],
+                timestamp=datetime.fromisoformat(row[6]) if row[6] else None,
+                created_at=datetime.fromisoformat(row[7]) if row[7] else None,
+                metrics=row[8],
+                chart_data=row[9]
+            )
+        return None
+    
+    def resolve_user_alerts(self, info, limit=10, offset=0, user_id=None):
+        """Get user alerts with pagination and optional filtering"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if user_id:
+            cursor.execute("""
+                SELECT id, user_id, alert_name, sensor_type, condition_type, 
+                       threshold_value, is_active, created_at, updated_at 
+                FROM user_alerts 
+                WHERE user_id = ? 
+                ORDER BY created_at DESC 
+                LIMIT ? OFFSET ?
+            """, (user_id, limit, offset))
+        else:
+            cursor.execute("""
+                SELECT id, user_id, alert_name, sensor_type, condition_type, 
+                       threshold_value, is_active, created_at, updated_at 
+                FROM user_alerts 
+                ORDER BY created_at DESC 
+                LIMIT ? OFFSET ?
+            """, (limit, offset))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [
+            UserAlertType(
+                id=row[0],
+                user_id=row[1],
+                alert_name=row[2],
+                sensor_type=row[3],
+                condition_type=row[4],
+                threshold_value=row[5],
+                is_active=bool(row[6]),
+                created_at=datetime.fromisoformat(row[7]) if row[7] else None,
+                updated_at=datetime.fromisoformat(row[8]) if row[8] else None
+            ) for row in rows
+        ]
+    
+    def resolve_active_alerts(self, info, user_id=None):
+        """Get active alerts for a user"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if user_id:
+            cursor.execute("""
+                SELECT id, user_id, alert_name, sensor_type, condition_type, 
+                       threshold_value, is_active, created_at, updated_at 
+                FROM user_alerts 
+                WHERE user_id = ? AND is_active = 1 
+                ORDER BY created_at DESC
+            """, (user_id,))
+        else:
+            cursor.execute("""
+                SELECT id, user_id, alert_name, sensor_type, condition_type, 
+                       threshold_value, is_active, created_at, updated_at 
+                FROM user_alerts 
+                WHERE is_active = 1 
+                ORDER BY created_at DESC
+            """)
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [
+            UserAlertType(
+                id=row[0],
+                user_id=row[1],
+                alert_name=row[2],
+                sensor_type=row[3],
+                condition_type=row[4],
+                threshold_value=row[5],
+                is_active=bool(row[6]),
+                created_at=datetime.fromisoformat(row[7]) if row[7] else None,
+                updated_at=datetime.fromisoformat(row[8]) if row[8] else None
+            ) for row in rows
+        ]
     
     def resolve_irrigation_events_today(self, info):
         """Get irrigation events from today"""
@@ -319,25 +602,102 @@ class Query(ObjectType):
     
     def resolve_farm_status(self, info):
         """Get overall farm status combining all entities"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get current sensor values
+        cursor.execute("SELECT value FROM sensor_data WHERE sensor_type = 'temperature' ORDER BY timestamp DESC LIMIT 1")
+        temp_row = cursor.fetchone()
+        current_temp = temp_row[0] if temp_row else None
+        
+        cursor.execute("SELECT value FROM sensor_data WHERE sensor_type = 'humidity' ORDER BY timestamp DESC LIMIT 1")
+        humidity_row = cursor.fetchone()
+        current_humidity = humidity_row[0] if humidity_row else None
+        
+        cursor.execute("SELECT value FROM sensor_data WHERE sensor_type = 'energy_usage' ORDER BY timestamp DESC LIMIT 1")
+        energy_row = cursor.fetchone()
+        current_energy = energy_row[0] if energy_row else None
+        
+        cursor.execute("SELECT value FROM sensor_data WHERE sensor_type = 'yield_efficiency' ORDER BY timestamp DESC LIMIT 1")
+        yield_row = cursor.fetchone()
+        current_yield = yield_row[0] if yield_row else None
+        
+        # Get counts
+        cursor.execute("SELECT COUNT(*) FROM sensor_data")
+        total_sensors = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM session_metadata WHERE is_active = 1")
+        active_sessions = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM user_alerts WHERE is_active = 1")
+        active_alerts = cursor.fetchone()[0]
+        
+        # Get last data update
+        cursor.execute("SELECT timestamp FROM sensor_data ORDER BY timestamp DESC LIMIT 1")
+        last_update_row = cursor.fetchone()
+        last_update = datetime.fromisoformat(last_update_row[0]) if last_update_row else None
+        
+        conn.close()
+        
         return FarmStatusType(
-            last_irrigation=datetime.now(),
-            current_humidity=65.2,
-            current_temperature=24.5,
-            active_pests=1,
-            system_status="healthy",
-            # Additional fields to resolve ambiguous mappings
-            current_soil_moisture=45.2,
-            current_soil_ph=6.7,
-            current_soil_temperature=22.3,
-            current_plant_height=19.99,
-            current_fruit_count=2,
-            current_nitrogen_level=62.96,
-            current_pressure=1004.81,
-            current_wind_speed=10.26,
-            current_rainfall=0.55,
-            current_energy_usage=26.05,
-            current_yield_prediction=105.50
+            current_temperature=current_temp,
+            current_humidity=current_humidity,
+            current_energy_usage=current_energy,
+            current_yield_efficiency=current_yield,
+            total_sensors=total_sensors,
+            active_sessions=active_sessions,
+            active_alerts=active_alerts,
+            system_status="healthy" if current_temp and current_humidity else "warning",
+            last_data_update=last_update
         )
+    
+    def resolve_session_metadata(self, info, limit=10, offset=0):
+        """Get session metadata with pagination"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, session_id, created_at, last_activity, is_active 
+            FROM session_metadata 
+            ORDER BY last_activity DESC 
+            LIMIT ? OFFSET ?
+        """, (limit, offset))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [
+            SessionMetadataType(
+                id=row[0],
+                session_id=row[1],
+                created_at=datetime.fromisoformat(row[2]) if row[2] else None,
+                last_activity=datetime.fromisoformat(row[3]) if row[3] else None,
+                is_active=bool(row[4])
+            ) for row in rows
+        ]
+    
+    def resolve_active_sessions(self, info):
+        """Get active sessions"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, session_id, created_at, last_activity, is_active 
+            FROM session_metadata 
+            WHERE is_active = 1 
+            ORDER BY last_activity DESC
+        """)
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [
+            SessionMetadataType(
+                id=row[0],
+                session_id=row[1],
+                created_at=datetime.fromisoformat(row[2]) if row[2] else None,
+                last_activity=datetime.fromisoformat(row[3]) if row[3] else None,
+                is_active=bool(row[4])
+            ) for row in rows
+        ]
     
     # Soil Sensor Resolvers
     def resolve_soil_sensors(self, info, limit=10, offset=0):
@@ -615,25 +975,17 @@ class Query(ObjectType):
         """Get current test temperature"""
         return 25.0
 
-# Farm Status Type for cross-entity queries
+# Farm Status Type for cross-entity queries - Updated to match actual database
 class FarmStatusType(ObjectType):
-    last_irrigation = DateTime()
-    current_humidity = Float()
     current_temperature = Float()
-    active_pests = Int()
-    system_status = String()
-    # Additional fields to resolve ambiguous mappings
-    current_soil_moisture = Float()
-    current_soil_ph = Float()
-    current_soil_temperature = Float()
-    current_plant_height = Float()
-    current_fruit_count = Int()
-    current_nitrogen_level = Float()
-    current_pressure = Float()
-    current_wind_speed = Float()
-    current_rainfall = Float()
+    current_humidity = Float()
     current_energy_usage = Float()
-    current_yield_prediction = Float()
+    current_yield_efficiency = Float()
+    total_sensors = Int()
+    active_sessions = Int()
+    active_alerts = Int()
+    system_status = String()
+    last_data_update = DateTime()
 
 # Mutation Type for creating records
 class CreateIrrigationEvent(ObjectType):
@@ -711,39 +1063,41 @@ class Mutation(ObjectType):
 # Create GraphQL Schema
 schema = Schema(query=Query, mutation=Mutation)
 
-# Sample GraphQL Queries
+# Sample GraphQL Queries - Updated to match actual database
 SAMPLE_QUERIES = {
-    "irrigation": [
+    "sensor_data": [
         """
-        query GetLatestIrrigation {
-            latestIrrigationEvent {
-                eventId
+        query GetLatestSensorData {
+            latestSensorData {
+                id
                 timestamp
-                waterAmountLiters
-                irrigationMethod
-                status
+                sensorType
+                value
+                unit
+                source
             }
         }
         """,
         """
-        query GetIrrigationToday {
-            irrigationEventsToday {
-                eventId
+        query GetSensorDataByType($sensorType: String!) {
+            sensorDataByType(sensorType: $sensorType, limit: 10) {
+                id
                 timestamp
-                waterAmountLiters
-                irrigationMethod
-                irrigationDurationMinutes
+                sensorType
+                value
+                unit
             }
         }
         """,
         """
-        query GetIrrigationEvents($limit: Int, $offset: Int) {
-            irrigationEvents(limit: $limit, offset: $offset) {
-                eventId
+        query GetSensorData($limit: Int, $offset: Int) {
+            sensorData(limit: $limit, offset: $offset) {
+                id
                 timestamp
-                waterAmountLiters
-                irrigationMethod
-                status
+                sensorType
+                value
+                unit
+                source
             }
         }
         """
@@ -847,15 +1201,11 @@ SAMPLE_QUERIES = {
     ]
 }
 
-# Natural Language to GraphQL Mapping
+# Natural Language to GraphQL Mapping - Updated to match actual database
 NATURAL_LANGUAGE_MAPPING = {
-    "When was the last irrigation?": """
-        query GetLatestIrrigation {
-            latestIrrigationEvent {
-                timestamp
-                waterAmountLiters
-                irrigationMethod
-            }
+    "What is the current temperature?": """
+        query GetCurrentTemperature {
+            currentTemperature
         }
     """,
     "What is the current humidity?": """
@@ -863,45 +1213,67 @@ NATURAL_LANGUAGE_MAPPING = {
             currentHumidity
         }
     """,
-    "What pests have been detected today?": """
-        query GetPestDetectionsToday {
-            pestDetectionsToday {
-                pestOrDiseaseType
-                severityLevel
-                recommendedAction
-            }
+    "What is the current energy usage?": """
+        query GetCurrentEnergyUsage {
+            currentEnergyUsage
         }
     """,
-    "Show me irrigation events from last week": """
-        query GetIrrigationEvents {
-            irrigationEvents(limit: 10) {
-                eventId
+    "Show me temperature data": """
+        query GetTemperatureData {
+            sensorDataByType(sensorType: "temperature", limit: 10) {
+                id
                 timestamp
-                waterAmountLiters
-                irrigationMethod
+                value
+                unit
             }
         }
     """,
-    "What is the temperature now?": """
-        query GetCurrentTemperature {
-            currentTemperature
-        }
-    """,
-    "Are the fans running?": """
-        query GetLatestEnvironment {
-            latestEnvironmentControl {
-                fanStatus
-                heaterStatus
+    "Show me humidity data": """
+        query GetHumidityData {
+            sensorDataByType(sensorType: "humidity", limit: 10) {
+                id
+                timestamp
+                value
+                unit
             }
         }
     """,
-    "Show me high severity pest detections": """
-        query GetHighSeverityPests {
-            highSeverityPestDetections {
-                detectionId
-                pestOrDiseaseType
-                severityLevel
-                recommendedAction
+    "What is the farm status?": """
+        query GetFarmStatus {
+            farmStatus {
+                currentTemperature
+                currentHumidity
+                currentEnergyUsage
+                currentYieldEfficiency
+                totalSensors
+                activeSessions
+                activeAlerts
+                systemStatus
+                lastDataUpdate
+            }
+        }
+    """,
+    "Show me all sensor data": """
+        query GetAllSensorData {
+            sensorData(limit: 20) {
+                id
+                timestamp
+                sensorType
+                value
+                unit
+                source
+            }
+        }
+    """,
+    "Show me active alerts": """
+        query GetActiveAlerts {
+            activeAlerts {
+                id
+                alertName
+                sensorType
+                conditionType
+                thresholdValue
+                isActive
             }
         }
     """

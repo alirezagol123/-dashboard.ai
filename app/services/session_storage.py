@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 import logging
@@ -9,8 +10,17 @@ logger = logging.getLogger(__name__)
 class SessionStorage:
     """Database-based session storage for queries, responses, SQL, and semantic JSON"""
     
-    def __init__(self, db_path: str = "smart_dashboard.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        # Use proper database path for Liara
+        if db_path is None:
+            if os.getenv("LIARA_APP_ID"):
+                db_dir = "/var/lib/data"
+                os.makedirs(db_dir, exist_ok=True)
+                self.db_path = os.path.join(db_dir, "smart_dashboard.db")
+            else:
+                self.db_path = "smart_dashboard.db"
+        else:
+            self.db_path = db_path
         self._init_tables()
     
     def _init_tables(self):

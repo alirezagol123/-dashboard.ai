@@ -343,9 +343,10 @@ async def ai_query(request: AnalysisRequest):
         
         # Return in required format: { "input": "...", "output": "..." }
         if result.get("success"):
+            # Return the full structured response for chat mode
             return {
                 "input": request.query,
-                "output": result.get("answer", "I'm here to help with your agricultural questions!")
+                "output": result  # Return the full result object
             }
         else:
             return {
@@ -377,6 +378,9 @@ async def semantic_query(request: AnalysisRequest):
             "summary": result.get("summary", ""),
             "metrics": result.get("metrics", {}),
             "raw_data": result.get("raw_data", []),
+            "chart": result.get("chart", None),
+            "chart_type": result.get("chart_type", None),
+            "chart_metadata": result.get("chart_metadata", None),
             "sql": result.get("sql", ""),
             "language": result.get("language", "unknown"),
             "feature_context": result.get("feature_context", "dashboard"),
@@ -570,6 +574,9 @@ async def ask_with_intent_routing(request: dict):
             "query": query,
             "response": result.get("response", "No response generated"),
             "data": result.get("data", []),
+            "chart": result.get("chart", None),
+            "chart_type": result.get("chart_type", None),
+            "chart_metadata": result.get("chart_metadata", None),
             "sql": result.get("sql", ""),
             "metrics": result.get("metrics", {}),
             "detected_intent": result.get("detected_intent", "unknown"),
@@ -769,42 +776,59 @@ async def ask_with_streaming(request: dict):
                 else:
                     language_instruction = "The user query is in English. Respond in English."
                 
-                streaming_prompt = f"""You are an AI assistant for a smart agriculture platform. 
-Always respond in this structured format with proper markdown formatting:
+                streaming_prompt = f"""You are an expert agricultural AI assistant. Provide concise, helpful responses.
 
-# Summary
-Brief one-sentence summary based on the actual sensor data
+RESPONSE STRUCTURE:
+1. **Brief Summary** - 2 sentences maximum about the current situation
+2. **Clean Data Section** - Show the actual data in a readable format
 
-## Key Metrics
-- Metric 1: actual_value
-- Metric 2: actual_value  
-- Metric 3: actual_value
+GUIDELINES:
+- Keep it short and to the point (2 sentences max)
+- Give quick insights about what the data shows
+- {language_instruction}
+- Use EXACT time range from the data provided below
+- NEVER use generic labels like "Last Hour", "Last 6 Hours", "Last 24 Hours", "Last Week"
+- NEVER use Persian generic labels like "آخرین ساعت", "آخرین ۶ ساعت", "آخرین ۲۴ ساعت", "آخرین هفته"
 
-## Analysis
-Brief analysis based on the real sensor readings (max 2 sentences)
+FOR THE DATA SECTION, use this format:
+```
+📊 Sensor Data by Time Range:
+• Sensor Name: Avg: X.X, Min: X.X, Max: X.X (EXACT TIME RANGE FROM DATA)
+• Sensor Name: Avg: X.X, Min: X.X, Max: X.X (EXACT TIME RANGE FROM DATA)
+• Sensor Name: Avg: X.X, Min: X.X, Max: X.X (EXACT TIME RANGE FROM DATA)
+• Sensor Name: Avg: X.X, Min: X.X, Max: X.X (EXACT TIME RANGE FROM DATA)
+```
 
-## Recommendations
-1. First recommendation based on actual data
-2. Second recommendation based on actual data
+CRITICAL INSTRUCTION: Copy the EXACT time labels from the data provided below. DO NOT create your own time range labels!
 
-Use proper markdown formatting with headers (#, ##), bullet points (-), and numbered lists (1., 2.). 
-Keep responses concise and clear.
+FOR THE ANALYSIS SECTION, use this format:
+```
+🔍 Analysis:
+• Trend: [Describe the trend - increasing, decreasing, stable]
+• Pattern: [Identify any patterns in the data]
+• Significance: [What this means for the farm]
+• Alert Level: [Low/Medium/High based on the data]
+```
 
-{language_instruction}
+FOR THE RECOMMENDATIONS SECTION, use this format:
+```
+💡 Recommendations:
+• Immediate Actions: [What to do right now]
+• Monitoring: [What to watch for]
+• Long-term: [Strategic advice for the future]
+• Resources: [Any tools or methods to use]
+```
+
+IMPORTANT: Use the actual sensor data values provided below. Be specific and helpful.
 
 User Query: {query}
 Detected Language: {detected_language}
 Feature Context: {feature_context}
+
+ACTUAL DATA FROM DATABASE:
 {real_data_text}
 
-CRITICAL INSTRUCTION: You MUST use the actual sensor data values provided above in your response. 
-- Use the exact values from the sensor data
-- Base your analysis on these real measurements
-- Make specific recommendations based on these actual readings
-- Do NOT generate fake or generic data
-- If no data is provided, clearly state that no data is available
-
-Provide a structured response following the markdown format above using ONLY the real data provided."""
+Provide an intelligent, helpful response with a clean data section using the actual values above."""
                 
                 print(f" STEP 3: Starting LLM streaming with REAL DATA...")
                 logger.info(f" Starting LLM streaming for query: {query}")
@@ -944,6 +968,134 @@ async def monitor_alerts(session_id: str = "default"):
             "success": True,
             "triggered_alerts": triggered_alerts,
             "data_points": len(live_data)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/alerts/actions")
+async def get_action_logs(session_id: str = "default"):
+    """Get action logs for alerts"""
+    try:
+        import sqlite3
+        import json
+        
+        # Connect to database with proper path for Liara
+        if os.getenv("LIARA_APP_ID"):
+            db_dir = "/var/lib/data"
+            os.makedirs(db_dir, exist_ok=True)
+            db_path = os.path.join(db_dir, "smart_dashboard.db")
+        else:
+            db_path = "smart_dashboard.db"
+        
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Create action_logs table if it doesn't exist
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS action_logs (
+                id TEXT PRIMARY KEY,
+                alert_id TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT,
+                timestamp TEXT NOT NULL,
+                completed_at TEXT,
+                session_id TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Get action logs for this session
+        cursor.execute('''
+            SELECT * FROM action_logs 
+            WHERE session_id = ? 
+            ORDER BY timestamp DESC 
+            LIMIT 50
+        ''', (session_id,))
+        
+        logs = cursor.fetchall()
+        
+        # Convert to list of dictionaries
+        action_logs = []
+        for log in logs:
+            action_logs.append({
+                "id": log[0],
+                "alert_id": log[1],
+                "action_type": log[2],
+                "status": log[3],
+                "message": log[4],
+                "timestamp": log[5],
+                "completed_at": log[6],
+                "session_id": log[7],
+                "created_at": log[8]
+            })
+        
+        conn.close()
+        
+        return {
+            "success": True,
+            "action_logs": action_logs,
+            "total_logs": len(action_logs)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/alerts/actions")
+async def create_action_log(action_data: dict):
+    """Create a new action log entry"""
+    try:
+        import sqlite3
+        import json
+        from datetime import datetime
+        
+        # Connect to database with proper path for Liara
+        if os.getenv("LIARA_APP_ID"):
+            db_dir = "/var/lib/data"
+            os.makedirs(db_dir, exist_ok=True)
+            db_path = os.path.join(db_dir, "smart_dashboard.db")
+        else:
+            db_path = "smart_dashboard.db"
+        
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Create action_logs table if it doesn't exist
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS action_logs (
+                id TEXT PRIMARY KEY,
+                alert_id TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT,
+                timestamp TEXT NOT NULL,
+                completed_at TEXT,
+                session_id TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Insert new action log
+        log_id = f"log_{int(datetime.now().timestamp() * 1000)}"
+        cursor.execute('''
+            INSERT INTO action_logs (id, alert_id, action_type, status, message, timestamp, session_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            log_id,
+            action_data.get("alert_id"),
+            action_data.get("action_type"),
+            action_data.get("status", "executing"),
+            action_data.get("message"),
+            action_data.get("timestamp"),
+            action_data.get("session_id")
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "log_id": log_id,
+            "message": "Action log created successfully"
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
