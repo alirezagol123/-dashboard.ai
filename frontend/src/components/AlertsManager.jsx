@@ -34,7 +34,7 @@ const AlertsManager = ({ sessionId = "default" }) => {
   const fetchActionLogs = async () => {
     try {
       console.log('Fetching action logs for session:', sessionId);
-      const response = await fetch(`http://127.0.0.1:8000/api/alerts/actions?session_id=${sessionId}`);
+      const response = await fetch(`https://app-data.liara.run/api/alerts/actions?session_id=${sessionId}`);
       
       if (!response.ok) {
         throw new Error(`Failed to fetch action logs: ${response.status} ${response.statusText}`);
@@ -120,7 +120,7 @@ const AlertsManager = ({ sessionId = "default" }) => {
       setError(null);
       
       console.log('Fetching alerts for session:', sessionId);
-      const response = await fetch(`http://127.0.0.1:8000/api/alerts?session_id=${sessionId}`);
+      const response = await fetch(`https://app-data.liara.run/api/alerts?session_id=${sessionId}`);
       console.log('Alerts API Response Status:', response.status);
       
       if (!response.ok) {
@@ -154,7 +154,7 @@ const AlertsManager = ({ sessionId = "default" }) => {
   // Check for triggered alerts
   const checkTriggeredAlerts = async () => {
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/alerts/monitor?session_id=${sessionId}`);
+      const response = await fetch(`https://app-data.liara.run/api/alerts/monitor?session_id=${sessionId}`);
       if (!response.ok) return;
       
       const data = await response.json();

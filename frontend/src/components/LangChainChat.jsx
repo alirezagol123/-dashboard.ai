@@ -520,8 +520,8 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
     try {
       console.log('🔄 DEBUG: Loading AI Assistant data...')
       const [featuresResponse, healthResponse] = await Promise.all([
-        axios.get('http://127.0.0.1:8000/api/ai/features'),
-        axios.get('http://127.0.0.1:8000/api/ai/health')
+        axios.get('https://app-data.liara.run/api/ai/features'),
+        axios.get('https://app-data.liara.run/api/ai/health')
       ])
       
       setAvailableFeatures(featuresResponse.data)
@@ -535,8 +535,8 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
   const loadFeatureData = async (feature) => {
     try {
       const [infoResponse, queriesResponse] = await Promise.all([
-        axios.get(`http://127.0.0.1:8000/api/ai/features/${feature}`),
-        axios.get(`http://127.0.0.1:8000/api/ai/features/${feature}/sample-queries`)
+        axios.get(`https://app-data.liara.run/api/ai/features/${feature}`),
+        axios.get(`https://app-data.liara.run/api/ai/features/${feature}/sample-queries`)
       ])
       
       setFeatureInfo(infoResponse.data)
@@ -551,8 +551,8 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
     try {
       console.log('🔄 DEBUG: Loading Semantic Layer data...')
       const [queriesResponse, ontologyResponse] = await Promise.all([
-        axios.get('http://127.0.0.1:8000/semantic/sample-queries'),
-        axios.get('http://127.0.0.1:8000/semantic/ontology')
+        axios.get('https://app-data.liara.run/semantic/sample-queries'),
+        axios.get('https://app-data.liara.run/semantic/ontology')
       ])
       
       setSemanticQueries(queriesResponse.data)
@@ -837,7 +837,7 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
         console.log('📊 DEBUG: Using DATA QUERY mode (semantic layer)')
         
         // Use streaming endpoint for real-time responses
-        const response = await fetch('http://127.0.0.1:8000/ask/stream', {
+        const response = await fetch('https://app-data.liara.run/ask/stream', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -968,7 +968,7 @@ const LangChainChat = ({ currentFeature = 'dashboard', sidebarWidth = 320, sessi
         console.log('💬 DEBUG: Using CHAT mode (pure AI conversation)')
         
         // Pure AI chat mode - use regular AI endpoint
-        response = await axios.post('http://127.0.0.1:8000/ai/query', {
+        response = await axios.post('https://app-data.liara.run/ai/query', {
           query: inputMessage,
           feature_context: currentFeature
       })

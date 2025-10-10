@@ -6,7 +6,7 @@ class WebSocketService {
     this.reconnectInterval = 5000
     this.listeners = new Set()
     this.isConnected = false
-    this.url = 'ws://localhost:8000/ws/data'
+    this.url = 'wss://app-data.liara.run/ws/data'
   }
 
   connect() {
